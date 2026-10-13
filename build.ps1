@@ -3,7 +3,11 @@ $ErrorActionPreference = 'Stop'
 $dir = $PSScriptRoot
 $python = Join-Path $dir '.venv\Scripts\python.exe'
 & $python -m pip install --quiet --disable-pip-version-check pyinstaller
-& $python -m PyInstaller --noconfirm --clean --onefile --windowed --name CalendarAlarm `
+$icon = Join-Path $dir 'build\CalendarAlarm.ico'
+New-Item -ItemType Directory -Force (Join-Path $dir 'build') | Out-Null
+Set-Location $dir
+& $python -c "import calendar_alarm as c; c.make_icon(c.COLOR_OK).save(r'$icon', sizes=[(s, s) for s in (16, 24, 32, 48, 64, 256)])"
+& $python -m PyInstaller --noconfirm --onefile --windowed --name CalendarAlarm --icon $icon `
     --collect-submodules caldav --collect-submodules icalendar --collect-submodules icalendar_searcher `
     --collect-submodules recurring_ical_events --collect-submodules x_wr_timezone --collect-submodules keyring `
     --collect-data icalendar --collect-data tzdata `

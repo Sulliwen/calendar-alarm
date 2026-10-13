@@ -456,11 +456,12 @@ class AlarmWindow(tk.Toplevel):
 
 
 def make_icon(color):
-    image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    # Drawn large: the same picture also makes the icon of the executable (build.ps1).
+    image = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((6, 8, 58, 58), 9, fill=color)
-    draw.rounded_rectangle((11, 24, 53, 53), 4, fill="white")
-    draw.ellipse((24, 30, 40, 46), fill=color)
+    draw.rounded_rectangle((24, 32, 232, 232), 36, fill=color)
+    draw.rounded_rectangle((44, 96, 212, 212), 16, fill="white")
+    draw.ellipse((96, 120, 160, 184), fill=color)
     return image
 
 
