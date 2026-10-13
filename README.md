@@ -9,12 +9,14 @@ plan avec le titre du rendez-vous et deux boutons : **Arrêter** et
 L'agenda est relu toutes les minutes : un rendez-vous ajouté à la dernière
 minute sonne dès qu'il est découvert.
 
-## Installation (exécutable)
+## Installation
 
-1. Copier `CalendarAlarm.exe` dans un dossier où il restera (par exemple
-   `Documents\CalendarAlarm`), puis le lancer. Windows affiche un avertissement
-   SmartScreen car le fichier n'est pas signé : « Informations complémentaires »
-   → « Exécuter quand même ».
+1. Lancer `CalendarAlarm-Setup-<version>.exe` (aucun droit administrateur
+   requis). Le fichier n'étant pas signé, Windows affiche un avertissement
+   SmartScreen : « Informations complémentaires » → « Exécuter quand même ».
+   Pour vérifier que le fichier est intact, comparer son empreinte à celle du
+   fichier `.sha256` fourni avec lui :
+   `Get-FileHash CalendarAlarm-Setup-<version>.exe -Algorithm SHA256`
 2. Sur <https://config.infomaniak.com> : « Mes Contacts & Agendas » → onglet
    « Synchronisation manuelle ». Relever le **nom d'utilisateur** court (type
    `AB12345`) et cliquer sur **Générer** pour obtenir un mot de passe
@@ -41,6 +43,9 @@ quitter.
 - Le mot de passe est conservé dans le Gestionnaire d'identifications Windows.
   S'il est refusé par Infomaniak, le programme le redemande.
 
+Désinstallation : « Applications installées » de Windows. Elle retire aussi
+les réglages et le mot de passe enregistré.
+
 Limites : Windows uniquement ; le PC doit être allumé, session ouverte.
 
 ## Réglages
@@ -66,6 +71,6 @@ Python 3.12 ou plus récent, installé côté Windows.
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1    # venv, dépendances, lancement
 .venv\Scripts\python.exe -m unittest                    # tests
-powershell -ExecutionPolicy Bypass -File build.ps1      # produit dist\CalendarAlarm.exe
+powershell -ExecutionPolicy Bypass -File build.ps1      # produit l'installeur dans dist\ (Inno Setup 6 requis)
 powershell -ExecutionPolicy Bypass -File uninstall.ps1  # arrêt et retrait du démarrage
 ```
