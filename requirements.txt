@@ -1,0 +1,4 @@
+caldav
+keyring
+pystray
+Pillow
