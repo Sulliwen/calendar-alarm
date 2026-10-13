@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import icalendar
@@ -46,23 +46,34 @@ DURATION:PT30M
 ATTENDEE;PARTSTAT=DECLINED:mailto:other@example.com
 ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:me@example.com
 END:VEVENT
+BEGIN:VEVENT
+UID:weekly
+SUMMARY:Hebdo
+DTSTART:20260901T090000Z
+DTEND:20260901T093000Z
+RRULE:FREQ=WEEKLY
+END:VEVENT
 END:VCALENDAR
 """
+
+CALDAV = {"id": "a", "type": "caldav", "url": "https://example.com", "username": "AB12345", "calendars": ["url/mine"]}
+FEED = {"id": "g", "type": "ics", "name": "Google"}
 
 
 def event(key, start):
     return Event(key, start, start + timedelta(hours=1), key, "", "cal")
 
 
+def components(ics=ICS):
+    return icalendar.Calendar.from_ical(ics).walk("VEVENT")
+
+
 class ExtractEventsTest(unittest.TestCase):
     def setUp(self):
-        self.events = {
-            e.key.split("|")[0]: e
-            for e in extract_events(icalendar.Calendar.from_ical(ICS), "Perso", {"me@example.com"})
-        }
+        self.events = {e.key.split("|")[0]: e for e in extract_events(components(), "Perso", {"me@example.com"})}
 
     def test_keeps_only_timed_live_undeclined_events(self):
-        self.assertEqual(set(self.events), {"timed", "accepted"})
+        self.assertEqual(set(self.events), {"timed", "accepted", "weekly"})
 
     def test_reads_fields_and_converts_to_local_time(self):
         timed = self.events["timed"]
@@ -72,9 +83,7 @@ class ExtractEventsTest(unittest.TestCase):
         self.assertEqual(self.events["accepted"].end - self.events["accepted"].start, timedelta(minutes=30))
 
     def test_key_changes_when_the_event_moves(self):
-        moved = extract_events(
-            icalendar.Calendar.from_ical(ICS.replace("20261013T120000Z", "20261013T121500Z")), "Perso", set()
-        )
+        moved = extract_events(components(ICS.replace("20261013T120000Z", "20261013T121500Z")), "Perso", set())
         self.assertNotEqual(moved[0].key, self.events["timed"].key)
 
 
@@ -99,21 +108,56 @@ class DueEventsTest(unittest.TestCase):
         self.assertFalse(self.due(5, handled=["e"]))
 
 
+class IcsUrlTest(unittest.TestCase):
+    def test_only_https_feeds_are_accepted(self):
+        normalize = calendar_alarm.normalize_ics_url
+        self.assertEqual(normalize(" https://x.test/basic.ics "), "https://x.test/basic.ics")
+        self.assertEqual(normalize("webcal://x.test/basic.ics"), "https://x.test/basic.ics")
+        for refused in ("file:///C:/secret.txt", "http://x.test/basic.ics", "basic.ics", ""):
+            self.assertIsNone(normalize(refused))
+
+
+class ConfigTest(unittest.TestCase):
+    def test_single_account_configuration_is_migrated(self):
+        legacy = {"username": "AB12345", "calendars": ["url/mine"], "lead_minutes": 15}
+        with (
+            mock.patch("calendar_alarm.load_json", return_value=legacy),
+            mock.patch("calendar_alarm.save_json") as save_json,
+            mock.patch("calendar_alarm.keyring") as keyring,
+        ):
+            keyring.get_password.return_value = "secret"
+            config = calendar_alarm.load_config()
+        (account,) = config["accounts"]
+        self.assertEqual(
+            {**account, "id": "x"},
+            {"id": "x", "type": "caldav", "url": "https://sync.infomaniak.com", "username": "AB12345", "calendars": ["url/mine"]},
+        )
+        self.assertEqual(config["lead_minutes"], 15)
+        keyring.set_password.assert_called_once_with(f"calendar-alarm:{account['id']}", "secret", "secret")
+        keyring.delete_password.assert_called_once_with("calendar-alarm", "AB12345")
+        self.assertNotIn("username", save_json.call_args.args[1])
+
+    def test_default_accounts_are_not_shared_between_configurations(self):
+        with mock.patch("calendar_alarm.load_json", return_value={}):
+            calendar_alarm.load_config()["accounts"].append("x")
+        self.assertEqual(calendar_alarm.DEFAULT_CONFIG["accounts"], [])
+
+
 class AppTest(unittest.TestCase):
     """Drives the real windows, with the sound, the tray and the vault mocked out."""
 
     def setUp(self):
-        for target in ("winsound.PlaySound", "keyring.get_password", "save_json"):
+        for target in ("winsound.PlaySound", "keyring", "save_json"):
             patcher = mock.patch(f"calendar_alarm.{target}")
             setattr(self, target.split(".")[-1], patcher.start())
             self.addCleanup(patcher.stop)
-        self.get_password.return_value = "secret"
+        self.keyring.get_password.return_value = "secret"
         with mock.patch("calendar_alarm.load_json", return_value={}):
             self.app = calendar_alarm.App()
         self.app.tray = mock.Mock()
         self.app.fetcher = mock.Mock()
-        self.app.config["username"] = "AB12345"
-        self.app.config["calendars"] = ["url/mine"]
+        self.caldav, self.feed = dict(CALDAV), dict(FEED)
+        self.app.config["accounts"] = [self.caldav]
         self.app.root.after = mock.Mock()
         self.addCleanup(self.app.root.destroy)
         self.now = datetime.now().astimezone()
@@ -122,9 +166,11 @@ class AppTest(unittest.TestCase):
         self.app.tick()
         self.app.root.update()
 
+    # --- alarms
+
     def test_stop_silences_the_event_for_good(self):
         soon = event("soon", self.now + timedelta(minutes=4))
-        self.app.on_events([soon, event("later", self.now + timedelta(hours=3))])
+        self.app.on_events("a", [soon, event("later", self.now + timedelta(hours=3))])
         self.tick()
         self.assertEqual(list(self.app.windows), ["soon"])
         self.assertTrue(self.app.sound_playing)
@@ -139,7 +185,7 @@ class AppTest(unittest.TestCase):
 
     def test_snooze_rings_again_even_after_the_grace_period(self):
         started = event("started", self.now - timedelta(minutes=3))
-        self.app.on_events([started])
+        self.app.on_events("a", [started])
         self.tick()
         self.app.windows["started"].snooze()
         self.tick()
@@ -147,70 +193,137 @@ class AppTest(unittest.TestCase):
         self.assertFalse(self.app.sound_playing)
 
         self.app.snoozed["started"] = (self.now - timedelta(seconds=1), started)
-        self.app.on_events([])
+        self.app.on_events("a", [])
         self.tick()
         self.assertEqual(list(self.app.windows), ["started"])
         self.assertNotIn("started", self.app.acked)
 
     def test_cancelled_event_stops_ringing(self):
-        self.app.on_events([event("soon", self.now + timedelta(minutes=4))])
+        self.app.on_events("a", [event("soon", self.now + timedelta(minutes=4))])
         self.tick()
-        self.app.on_events([])
+        self.app.on_events("a", [])
         self.assertFalse(self.app.windows)
         self.assertFalse(self.app.sound_playing)
 
-    def test_refused_credentials_reopen_the_dialog(self):
-        self.app.on_auth_failed()
-        self.app.root.update()
-        self.assertIsNotNone(self.app.credentials_dialog)
-        self.app.credentials_dialog.close()
-        self.assertIsNone(self.app.credentials_dialog)
+    def test_meeting_present_in_two_accounts_rings_once_and_survives_one_of_them(self):
+        self.app.config["accounts"].append(self.feed)
+        soon = event("soon", self.now + timedelta(minutes=4))
+        self.app.on_events("a", [soon])
+        self.app.on_events("g", [soon])
+        self.tick()
+        self.assertEqual(list(self.app.windows), ["soon"])
+        # Removed from one calendar only: still a meeting.
+        self.app.on_events("g", [])
+        self.assertEqual(list(self.app.windows), ["soon"])
 
-    def fetch(self, found):
+    # --- accounts
+
+    def fetch_caldav(self, found):
         calendars = {}
         for url in ("url/mine", "url/colleague"):
             calendars[url] = (mock.Mock(**{"search.return_value": found}), url)
-        account = calendar_alarm.Account(calendars, set(), "Me")
+        discovery = calendar_alarm.Discovery(calendars, set(), "Me")
         fetcher = calendar_alarm.Fetcher(self.app)
-        with mock.patch("calendar_alarm.discover", return_value=account):
-            return fetcher.fetch("https://example.com", "AB12345", "secret"), calendars
+        with mock.patch("calendar_alarm.discover", return_value=discovery):
+            return fetcher.fetch(self.caldav, "secret"), calendars
 
     def test_only_the_chosen_calendars_are_read(self):
         found = [mock.Mock(icalendar_instance=icalendar.Calendar.from_ical(ICS))]
-        events, calendars = self.fetch(found)
+        events, calendars = self.fetch_caldav(found)
         self.assertEqual({e.calendar for e in events}, {"url/mine"})
         calendars["url/colleague"][0].search.assert_not_called()
 
     def test_calendars_must_be_chosen_first_and_still_exist(self):
         for chosen in (None, ["url/deleted"]):
-            self.app.config["calendars"] = chosen
+            self.caldav["calendars"] = chosen
             with self.assertRaises(calendar_alarm.CalendarsNeeded):
-                self.fetch([])
+                self.fetch_caldav([])
+
+    def test_ical_feed_expands_recurrences_and_spots_declined_invitations(self):
+        fetcher = calendar_alarm.Fetcher(self.app)
+        start = datetime(2026, 10, 13, 0, 0, tzinfo=timezone.utc)
+        url = "https://calendar.test/ical/me%40example.com/private-abc/basic.ics"
+        with mock.patch("calendar_alarm.download_ics", return_value=ICS.encode()) as download:
+            events = fetcher.fetch_ics(self.feed, url, start, start + timedelta(days=7))
+            fetcher.fetch_ics(self.feed, url, start, start + timedelta(days=7))
+        self.assertEqual(download.call_count, 2)
+        by_uid = {}
+        for e in events:
+            by_uid.setdefault(e.key.split("|")[0], []).append(e)
+        self.assertEqual(set(by_uid), {"timed", "accepted", "weekly"})
+        self.assertEqual(
+            [e.start for e in by_uid["weekly"]], [datetime(2026, 10, 13, 9, 0, tzinfo=timezone.utc)]
+        )
+        self.assertEqual(by_uid["weekly"][0].calendar, "Google")
 
     def test_first_choice_proposes_the_owner_calendar(self):
-        self.app.config["calendars"] = None
-        self.app.on_account({"url/mine": "Me", "url/colleague": "Someone"}, "Me")
-        self.app.ask_calendars()
+        self.caldav["calendars"] = None
+        self.app.on_discovery("a", {"url/mine": "Me", "url/colleague": "Someone"}, "Me")
+        self.app.ask_calendars("a")
         self.app.root.update()
-        dialog = self.app.calendars_dialog
+        dialog = self.app.dialogs["calendars"]
         self.assertEqual({url: var.get() for url, var in dialog.choices.items()}, {"url/mine": True, "url/colleague": False})
         dialog.choices["url/mine"].set(False)
         dialog.submit()
-        self.assertIsNotNone(self.app.calendars_dialog)
+        self.assertIn("calendars", self.app.dialogs)
         dialog.choices["url/colleague"].set(True)
         dialog.submit()
-        self.assertEqual(self.app.config["calendars"], ["url/colleague"])
-        self.assertIsNone(self.app.calendars_dialog)
+        self.assertEqual(self.caldav["calendars"], ["url/colleague"])
+        self.assertNotIn("calendars", self.app.dialogs)
         self.app.fetcher.reset.assert_called()
 
-    def test_health_turns_red_when_sync_goes_stale(self):
-        self.app.on_events([])
+    def test_refused_secret_reopens_the_matching_dialog(self):
+        self.app.config["accounts"].append(self.feed)
+        self.app.on_refused("g")
+        self.app.root.update()
+        self.assertIsInstance(self.app.dialogs["ics"], calendar_alarm.IcsDialog)
+        self.app.dialogs["ics"].close()
+        self.app.on_refused("a")
+        self.app.root.update()
+        self.assertIsInstance(self.app.dialogs["caldav"], calendar_alarm.CaldavDialog)
+        self.assertNotIn("ics", self.app.dialogs)
+
+    def test_adding_and_removing_an_ical_feed(self):
+        self.app.show_accounts()
+        self.app.edit_account(None, "ics")
+        self.app.root.update()
+        dialog = self.app.dialogs["ics"]
+        dialog.url.insert(0, "file:///C:/secret.txt")
+        dialog.submit()
+        self.assertEqual(len(self.app.config["accounts"]), 1)
+
+        dialog.tested(None, "Google", "https://calendar.test/basic.ics")
+        added = self.app.config["accounts"][1]
+        self.assertEqual((added["type"], added["name"]), ("ics", "Google"))
+        self.keyring.set_password.assert_called_once_with(
+            f"calendar-alarm:{added['id']}", "secret", "https://calendar.test/basic.ics"
+        )
+        # The address is a secret: it must stay out of the configuration file.
+        self.assertNotIn("calendar.test", str(self.save_json.call_args.args[1]))
+
+        self.app.on_events(added["id"], [event("soon", self.now + timedelta(hours=1))])
+        self.app.remove_account(added)
+        self.assertEqual(self.app.config["accounts"], [self.caldav])
+        self.assertFalse(self.app.events)
+        self.keyring.delete_password.assert_called_once_with(f"calendar-alarm:{added['id']}", "secret")
+
+    # --- health
+
+    def test_health_turns_red_as_soon_as_one_account_goes_stale(self):
+        self.app.config["accounts"].append(self.feed)
+        self.app.on_events("a", [])
+        self.tick()
+        self.assertFalse(self.app.healthy)
+        self.app.on_events("g", [])
         self.tick()
         self.assertTrue(self.app.healthy)
-        self.app.last_sync = self.now - timedelta(minutes=10)
+        self.assertTrue(self.app.status_text().startswith("Dernière synchro"))
+
+        self.app.last_sync["g"] = self.now - timedelta(minutes=10)
         self.tick()
         self.assertFalse(self.app.healthy)
         self.app.tray.notify.assert_called_once()
+        self.assertIn("Google", self.app.tray.notify.call_args.args[0])
 
 
 if __name__ == "__main__":

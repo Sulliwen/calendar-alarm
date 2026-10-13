@@ -1,8 +1,8 @@
-# Calendar Alarm — une alarme avant chaque rendez-vous Infomaniak
+# Calendar Alarm — une alarme avant chaque rendez-vous
 
 Petit programme Windows qui tourne en arrière-plan et sonne **10 minutes avant
-chaque rendez-vous** d'un agenda Infomaniak (Kalendar), que le rendez-vous porte
-un rappel ou non et quel que soit son créateur. Une fenêtre passe au premier
+chaque rendez-vous** de ses agendas (Infomaniak, Google et autres), que le
+rendez-vous porte un rappel ou non et quel que soit son créateur. Une fenêtre passe au premier
 plan avec le titre du rendez-vous et deux boutons : **Arrêter** et
 **Rappel 5 min**.
 
@@ -27,8 +27,24 @@ minute sonne dès qu'il est découvert.
 
 Le programme s'inscrit lui-même au démarrage de Windows. Tout le reste passe
 par un **clic droit** sur l'icône de la zone de notification : tester l'alarme,
-changer d'agendas ou d'identifiants, désactiver le lancement au démarrage,
+gérer les comptes et les agendas, désactiver le lancement au démarrage,
 quitter.
+
+## Ajouter d'autres agendas
+
+Clic droit sur l'icône → « Comptes et agendas… ». Deux sortes de sources,
+autant qu'on veut :
+
+- **Compte CalDAV** (Infomaniak, Nextcloud, iCloud…) : serveur, identifiant et
+  mot de passe d'application, puis choix des agendas du compte.
+- **Adresse iCal** (Google Agenda, Outlook…) : l'adresse secrète de l'agenda.
+  Dans Google Agenda : Paramètres → l'agenda voulu → « Intégrer l'agenda » →
+  « Adresse secrète au format iCal ». Cette adresse donne accès en lecture à
+  l'agenda : elle est conservée comme un mot de passe, ne pas la partager.
+  Une adresse par agenda.
+
+Un rendez-vous présent dans deux agendas (invitation reçue sur les deux) ne
+sonne qu'une fois.
 
 ## Comportement
 
@@ -38,13 +54,15 @@ quitter.
   5 minutes (sortie de veille), sonne immédiatement.
 - Sont ignorés : les événements « toute la journée », les rendez-vous annulés
   et les invitations refusées.
-- Icône verte : synchronisation en cours. Icône rouge et notification : plus de
-  synchronisation réussie depuis 5 minutes, les alarmes ne sont plus fiables.
-- Le mot de passe est conservé dans le Gestionnaire d'identifications Windows.
-  S'il est refusé par Infomaniak, le programme le redemande.
+- Icône verte : tous les comptes se synchronisent. Icône rouge et
+  notification : un compte n'a plus de synchronisation réussie depuis
+  5 minutes, ses alarmes ne sont plus fiables.
+- Mots de passe et adresses iCal sont conservés dans le Gestionnaire
+  d'identifications Windows. Si un serveur en refuse un, le programme le
+  redemande.
 
 Désinstallation : « Applications installées » de Windows. Elle retire aussi
-les réglages et le mot de passe enregistré.
+les réglages et les mots de passe enregistrés.
 
 Limites : Windows uniquement ; le PC doit être allumé, session ouverte.
 

@@ -1,6 +1,6 @@
 ; Per-user installer: no administrator rights needed.
 #define AppName "Calendar Alarm"
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 #define AppExe "CalendarAlarm.exe"
 
 [Setup]
@@ -37,8 +37,8 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Filename: "{app}\{#AppExe}"; Description: "Lancer {#AppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-; Saved application password (Windows Credential Manager).
-Filename: "{sys}\cmdkey.exe"; Parameters: "/delete:calendar-alarm"; Flags: runhidden; RunOnceId: "DeleteCredential"
+; Saved passwords and iCal addresses (Windows Credential Manager).
+Filename: "{app}\{#AppExe}"; Parameters: "--forget"; Flags: runhidden; RunOnceId: "ForgetSecrets"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{localappdata}\calendar-alarm"
