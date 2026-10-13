@@ -16,7 +16,8 @@ minute sonne dès qu'il est découvert.
 1. Lancez `CalendarAlarm-Setup-<version>.exe` (aucun droit administrateur
    requis). Le fichier n'étant pas signé, Windows affiche un avertissement
    SmartScreen : « Informations complémentaires » → « Exécuter quand même ».
-2. À la fin de l'installation, la fenêtre **« Comptes et agendas »** s'ouvre.
+2. À la fin de l'installation, la fenêtre **« Synchronisation agendas »**
+   s'ouvre.
    Choisissez votre fournisseur dans la liste déroulante, cliquez sur
    « Ajouter… » et suivez les indications affichées. Recommencez pour chaque
    agenda à surveiller.
@@ -25,8 +26,8 @@ Le programme s'inscrit lui-même au démarrage de Windows. Un **clic** sur
 l'icône de la zone de notification ouvre l'**Agenda** : tous les rendez-vous
 des 7 prochains jours, tous agendas confondus, regroupés par jour. Tout le
 reste passe par un **clic droit** sur cette icône : tester l'alarme,
-gérer les comptes et les agendas, changer de langue (français ou anglais),
-désactiver le lancement au démarrage, quitter.
+synchroniser d'autres agendas, ouvrir les paramètres, quitter. Le programme
+existe en français et en anglais.
 
 ## Agendas pris en charge
 
@@ -74,22 +75,25 @@ Limites : Windows uniquement ; le PC doit être allumé, session ouverte. Pour
 les agendas lus par une adresse iCal (Google, Outlook), le délai d'apparition
 d'un nouveau rendez-vous dépend du fournisseur.
 
-## Réglages
+## Paramètres
 
-`%LOCALAPPDATA%\calendar-alarm\config.json` (relancez le programme après
-modification) :
+Clic droit sur l'icône → « Paramètres… » :
 
-| Clé | Défaut | Rôle |
-| --- | --- | --- |
-| `lead_minutes` | 10 | Délai avant le rendez-vous |
-| `snooze_minutes` | 5 | Durée du rappel |
-| `late_grace_minutes` | 5 | Retard toléré pour sonner quand même |
-| `poll_seconds` | 60 | Fréquence de relecture des agendas |
-| `sound` | `C:\Windows\Media\Alarm01.wav` | Fichier `.wav` de la sonnerie |
-| `my_emails` | `[]` | Adresses servant à reconnaître vos invitations refusées |
-| `language` | langue de Windows | `"fr"` ou `"en"` |
+- **Alarme** : délai avant le rendez-vous, durée d'un rappel, sonnerie (celles
+  de Windows ou un fichier `.wav` de votre choix, avec un bouton pour
+  l'écouter), arrêt automatique du son après quelques minutes (la fenêtre
+  reste affichée), et possibilité de ne pas sonner pour les rendez-vous marqués
+  « Disponible ».
+- **Agenda** : nombre de jours affichés, affichage des événements « toute la
+  journée ».
+- **Général** : langue, fréquence de relecture des agendas, lancement au
+  démarrage de Windows.
 
-Le journal est dans le même dossier (`calendar-alarm.log`).
+Les réglages sont enregistrés dans `%LOCALAPPDATA%\calendar-alarm\config.json`.
+Deux d'entre eux ne se changent que dans ce fichier : `late_grace_minutes`
+(retard toléré pour sonner quand même, 5 par défaut) et `my_emails` (adresses
+servant à reconnaître vos invitations refusées). Le journal est dans le même
+dossier (`calendar-alarm.log`).
 
 ## Depuis les sources
 

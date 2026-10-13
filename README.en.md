@@ -16,7 +16,7 @@ rings as soon as it is found.
 1. Run `CalendarAlarm-Setup-<version>.exe` (no administrator rights needed).
    The file is not signed, so Windows shows a SmartScreen warning: “More
    info” → “Run anyway”.
-2. When the installation ends, the **“Accounts and calendars”** window opens.
+2. When the installation ends, the **“Calendar sync”** window opens.
    Pick your provider in the drop-down list, click “Add…” and follow the
    instructions shown. Repeat for every calendar to watch.
 
@@ -24,8 +24,8 @@ The program registers itself to start with Windows. A **click** on the icon in
 the notification area opens the **Agenda**: every appointment of the next
 7 days, from all calendars, grouped by day. Everything else goes through a
 **right-click** on that icon: test the alarm,
-manage accounts and calendars, change the language (French or English), turn
-off starting with Windows, quit.
+sync more calendars, open the settings, quit. The program exists in French and
+in English.
 
 ## Supported calendars
 
@@ -74,20 +74,21 @@ shows up depends on the provider.
 
 ## Settings
 
-`%LOCALAPPDATA%\calendar-alarm\config.json` (restart the program after a
-change):
+Right-click on the icon → “Settings…”:
 
-| Key | Default | Role |
-| --- | --- | --- |
-| `lead_minutes` | 10 | Delay before the appointment |
-| `snooze_minutes` | 5 | Length of a snooze |
-| `late_grace_minutes` | 5 | How late an appointment may still ring |
-| `poll_seconds` | 60 | How often calendars are read again |
-| `sound` | `C:\Windows\Media\Alarm01.wav` | `.wav` file of the alarm |
-| `my_emails` | `[]` | Addresses used to recognise the invitations you declined |
-| `language` | language of Windows | `"fr"` or `"en"` |
+- **Alarm**: delay before the appointment, length of a snooze, alarm sound
+  (those of Windows or a `.wav` file of your choice, with a button to listen to
+  it), automatic silence after a few minutes (the window stays), and an option
+  not to ring for appointments marked “Free”.
+- **Agenda**: number of days shown, whether all-day events are shown.
+- **General**: language, how often calendars are read again, starting with
+  Windows.
 
-The log is in the same folder (`calendar-alarm.log`).
+Settings are saved in `%LOCALAPPDATA%\calendar-alarm\config.json`. Two of them
+can only be changed in that file: `late_grace_minutes` (how late an appointment
+may still ring, 5 by default) and `my_emails` (addresses used to recognise the
+invitations you declined). The log is in the same folder
+(`calendar-alarm.log`).
 
 ## From the sources
 

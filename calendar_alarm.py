@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime, time as clock, timedelta
 from functools import partial
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from urllib.parse import unquote, urlsplit
 
 import caldav
@@ -62,6 +62,13 @@ DEFAULT_CONFIG = {
     "language": None,
     "lead_minutes": 10,
     "snooze_minutes": 5,
+    # The sound stops by itself after this many minutes, the window stays; 0 means never.
+    "silence_after_minutes": 0,
+    # Appointments marked "free" (shown as available) are displayed but do not ring.
+    "ignore_free": False,
+    # Days read ahead, today included: the alarms need the next minutes, the agenda window the rest.
+    "agenda_days": 7,
+    "show_all_day": True,
     # An event found after it started still rings during this many minutes.
     "late_grace_minutes": 5,
     "poll_seconds": 60,
@@ -70,8 +77,8 @@ DEFAULT_CONFIG = {
     "my_emails": [],
 }
 
-# Days read ahead, today included: the alarms need the next minutes, the agenda window the rest.
-AGENDA_DAYS = 7
+SILENCE_CHOICES = [0, 1, 2, 5, 10]
+POLL_CHOICES = [60, 120, 300]
 RETRY_SECONDS = 15
 TICK_MS = 500
 REDISCOVER_SECONDS = 1800
@@ -86,6 +93,7 @@ COLOR_MUTED = "#80868b"
 COLOR_ACCENT = "#1a73e8"
 COLOR_HIGHLIGHT = "#e8f0fe"
 COLOR_LINE = "#e3e5e8"
+COLOR_PANEL = "#f6f7f8"
 # One colour per watched calendar, in the order they were added.
 CALENDAR_COLORS = ["#1a73e8", "#e67c00", "#0b8043", "#8e24aa", "#d93025", "#00897b", "#c2185b", "#5f6368"]
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
@@ -103,6 +111,8 @@ class Event:
     calendar: str
     # All-day events are shown in the agenda but never ring.
     all_day: bool = False
+    # Marked as "free" by its owner: it does not block the time slot.
+    free: bool = False
 
 
 class Refused(Exception):
@@ -272,6 +282,7 @@ def extract_events(components, calendar_name, my_addresses):
                 location=str(component.get("LOCATION") or ""),
                 calendar=calendar_name,
                 all_day=all_day,
+                free=str(component.get("TRANSP", "")).upper() == "TRANSPARENT",
             )
         )
     return events
@@ -337,6 +348,16 @@ def discover(url, username, password, config):
     except Exception:
         owner_name = ""
     return Discovery(calendars, addresses, owner_name)
+
+
+def alarm_sounds():
+    """{name: path} of the alarm sounds that come with Windows."""
+    media = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Media"
+    return {
+        f"{path.stem[:-2]} {path.stem[-2:]}": str(path)
+        for pattern in ("Alarm??.wav", "Ring??.wav")
+        for path in sorted(media.glob(pattern))
+    }
 
 
 def normalize_ics_url(url):
@@ -420,7 +441,7 @@ class Fetcher(threading.Thread):
         now = datetime.now().astimezone()
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         start = min(midnight, now - timedelta(minutes=self.app.config["late_grace_minutes"]))
-        end = midnight + timedelta(days=AGENDA_DAYS)
+        end = midnight + timedelta(days=self.app.config["agenda_days"])
         if account["type"] == "ics":
             return self.fetch_ics(account, secret, start, end)
         return self.fetch_caldav(account, secret, start, end)
@@ -459,43 +480,77 @@ class Fetcher(threading.Thread):
 # --- windows ----------------------------------------------------------------
 
 
-class Dialog(tk.Toplevel):
-    """A settings window, open at most once per name."""
+def button(parent, text, command, kind="secondary", **options):
+    """kind: "primary" (what the window is for), "secondary", or "link" (text only, inside a row)."""
+    background = parent["bg"]
+    styles = {
+        "primary": dict(
+            bg=COLOR_ACCENT, fg="white", activebackground="#174ea6", activeforeground="white",
+            font=(FONT, 10, "bold"), padx=16, pady=5,
+        ),
+        "secondary": dict(bg="#e8eaed", fg=COLOR_TEXT, activebackground="#dadce0", font=(FONT, 10), padx=16, pady=5),
+        "link": dict(
+            bg=background, fg=COLOR_ACCENT, activebackground=background, activeforeground="#174ea6",
+            font=(FONT, 9), padx=4, pady=0,
+        ),
+    }
+    return tk.Button(parent, text=text, command=command, relief="flat", bd=0, cursor="hand2", **styles[kind], **options)
 
-    def __init__(self, app, name, title):
+
+class Dialog(tk.Toplevel):
+    """A settings window, open at most once per name: a header, a body (self.frame) and a button bar."""
+
+    def __init__(self, app, name, title, subtitle=""):
         super().__init__(app.root)
         self.app = app
         self.name = name
         self.title(f"Calendar Alarm — {title}")
+        self.configure(bg="white")
         self.resizable(False, False)
         self.attributes("-topmost", True)
         self.protocol("WM_DELETE_WINDOW", self.close)
-        self.frame = tk.Frame(self, padx=20, pady=16)
-        self.frame.pack()
+        self.bind("<Escape>", lambda _: self.close())
+        # Sized in characters, so that the window keeps its proportions on a scaled display.
+        self.wrap = 60 * tkfont.Font(family=FONT, size=10).measure("0")
 
-    def text(self, message):
-        tk.Label(self.frame, text=message, font=(FONT, 10), wraplength=440, justify="left").pack(anchor="w", pady=(0, 10))
+        header = tk.Frame(self, bg="white", padx=22, pady=14)
+        header.pack(fill="x")
+        tk.Label(header, text=title, font=(FONT, 15, "bold"), bg="white", fg=COLOR_TEXT).pack(anchor="w")
+        if subtitle:
+            tk.Label(
+                header, text=subtitle, font=(FONT, 10), bg="white", fg=COLOR_MUTED, wraplength=self.wrap, justify="left"
+            ).pack(anchor="w", pady=(4, 0))
+        tk.Frame(self, bg=COLOR_LINE, height=1).pack(fill="x")
+        self.footer = tk.Frame(self, bg=COLOR_PANEL, padx=22, pady=10)
+        self.footer.pack(side="bottom", fill="x")
+        self.frame = tk.Frame(self, bg="white", padx=22, pady=14)
+        self.frame.pack(fill="both", expand=True)
+
+    def label(self, parent, text, **options):
+        options = {"font": (FONT, 10), "bg": parent["bg"], "fg": COLOR_TEXT, **options}
+        return tk.Label(parent, text=text, **options)
 
     def field(self, grid, row, label, value, show=""):
-        tk.Label(grid, text=label, font=(FONT, 10)).grid(row=row, column=0, sticky="w", pady=3, padx=(0, 12))
-        entry = tk.Entry(grid, font=(FONT, 10), width=38, show=show)
+        self.label(grid, label).grid(row=row, column=0, sticky="w", pady=5, padx=(0, 14))
+        entry = tk.Entry(
+            grid, font=(FONT, 10), width=40, show=show, relief="flat",
+            highlightthickness=1, highlightbackground="#c4c7cc", highlightcolor=COLOR_ACCENT,
+        )
         entry.insert(0, value)
-        entry.grid(row=row, column=1, pady=3)
+        entry.grid(row=row, column=1, pady=5, ipady=4)
         return entry
 
     def buttons(self, submit_text, submit):
-        self.status = tk.Label(self.frame, text="", font=(FONT, 9), fg=COLOR_ERROR, wraplength=440, justify="left")
-        self.status.pack(anchor="w", pady=(8, 0))
-        row = tk.Frame(self.frame)
-        row.pack(anchor="e", pady=(8, 0))
-        self.submit_button = tk.Button(row, text=submit_text, font=(FONT, 10), command=submit)
-        self.submit_button.pack(side="left", padx=(0, 8))
-        tk.Button(row, text=t("cancel"), font=(FONT, 10), command=self.close).pack(side="left")
+        self.status = self.label(self.frame, "", font=(FONT, 9), fg=COLOR_ERROR, wraplength=self.wrap, justify="left")
+        self.status.pack(anchor="w", pady=(10, 0))
+        button(self.footer, t("cancel"), self.close).pack(side="right")
+        self.submit_button = button(self.footer, submit_text, submit, "primary")
+        self.submit_button.pack(side="right", padx=(0, 8))
 
     def test(self, check, *args):
         """Runs check(*args) off the UI thread, then save(*args) unless it returned an error message."""
         self.submit_button.config(state="disabled")
-        self.status.config(text=t("testing"), fg="black")
+        self.status.config(text=t("testing"), fg=COLOR_MUTED)
 
         def run():
             try:
@@ -525,11 +580,10 @@ class Dialog(tk.Toplevel):
 
 class CaldavDialog(Dialog):
     def __init__(self, app, account, provider, message):
-        super().__init__(app, "caldav", t("title_caldav"))
+        super().__init__(app, "caldav", t(f"provider_{provider['key']}"), message)
         self.account = account
         self.provider = provider
-        self.text(message)
-        grid = tk.Frame(self.frame)
+        grid = tk.Frame(self.frame, bg="white")
         grid.pack(anchor="w")
         self.url = self.field(grid, 0, t("server"), account["url"] if account else provider["url"])
         self.username = self.field(grid, 1, t("username"), account["username"] if account else "")
@@ -555,22 +609,21 @@ class CaldavDialog(Dialog):
 
 class IcsDialog(Dialog):
     def __init__(self, app, account, provider, message):
-        super().__init__(app, "ics", t("title_ics"))
+        super().__init__(app, "ics", t(f"provider_{provider['key']}"), message)
         self.account = account
         self.provider = provider
-        self.text(message)
-        grid = tk.Frame(self.frame)
+        grid = tk.Frame(self.frame, bg="white")
         grid.pack(anchor="w")
         # A named provider makes a sensible default name; "other" does not.
         default_name = "" if provider["key"] == "ics" else t(f"provider_{provider['key']}")
-        self.label = self.field(grid, 0, t("calendar_name"), account["name"] if account else default_name)
+        self.label_entry = self.field(grid, 0, t("calendar_name"), account["name"] if account else default_name)
         self.url = self.field(grid, 1, t("ics_address"), "")
         self.buttons(t("test_and_save"), self.submit)
         self.bind("<Return>", lambda _: self.submit())
         self.url.focus_set()
 
     def submit(self):
-        name, url = self.label.get().strip(), normalize_ics_url(self.url.get())
+        name, url = self.label_entry.get().strip(), normalize_ics_url(self.url.get())
         if not name or url is None:
             self.status.config(text=t("ics_invalid"))
             return
@@ -588,9 +641,8 @@ class IcsDialog(Dialog):
 
 class CalendarsDialog(Dialog):
     def __init__(self, app, account):
-        super().__init__(app, "calendars", t("title_calendars"))
+        super().__init__(app, "calendars", t("title_calendars"), t("choose_calendars", name=account_label(account)))
         self.account = account
-        self.text(t("choose_calendars", name=account_label(account)))
         names = app.calendar_names[account["id"]]
         if account["calendars"] is None:
             # First choice: propose the calendar named after the account owner.
@@ -600,7 +652,10 @@ class CalendarsDialog(Dialog):
         self.choices = {}
         for url, name in sorted(names.items(), key=lambda item: item[1].lower()):
             self.choices[url] = tk.BooleanVar(self, value=url in selected)
-            tk.Checkbutton(self.frame, text=name, variable=self.choices[url], font=(FONT, 10)).pack(anchor="w")
+            tk.Checkbutton(
+                self.frame, text=name, variable=self.choices[url], font=(FONT, 10),
+                bg="white", activebackground="white", fg=COLOR_TEXT,
+            ).pack(anchor="w")
         self.buttons(t("save"), self.submit)
 
     def submit(self):
@@ -614,19 +669,18 @@ class CalendarsDialog(Dialog):
 
 class AccountsDialog(Dialog):
     def __init__(self, app):
-        super().__init__(app, "accounts", t("title_accounts"))
-        self.text(t("accounts_intro", minutes=app.config["lead_minutes"]))
-        self.rows = tk.Frame(self.frame)
+        super().__init__(app, "accounts", t("title_accounts"), t("accounts_intro"))
+        self.rows = tk.Frame(self.frame, bg="white")
         self.rows.pack(anchor="w", fill="x")
-        add = tk.Frame(self.frame)
-        add.pack(anchor="w", pady=(14, 0))
-        tk.Label(add, text=t("add_calendar"), font=(FONT, 10)).pack(side="left", padx=(0, 8))
+        add = tk.Frame(self.frame, bg="white")
+        add.pack(anchor="w", pady=(16, 0))
+        self.label(add, t("add_calendar")).pack(side="left", padx=(0, 8))
         names = [t(f"provider_{provider['key']}") for provider in PROVIDERS]
         self.provider = ttk.Combobox(add, state="readonly", values=names, width=30, font=(FONT, 10))
         self.provider.current(0)
         self.provider.pack(side="left", padx=(0, 8))
-        tk.Button(add, text=t("add"), font=(FONT, 10), command=self.add).pack(side="left")
-        tk.Button(self.frame, text=t("close"), font=(FONT, 10), command=self.close).pack(anchor="e", pady=(14, 0))
+        button(add, t("add"), self.add, "primary").pack(side="left")
+        button(self.footer, t("close"), self.close).pack(side="right")
         self.refresh()
 
     def add(self):
@@ -637,14 +691,20 @@ class AccountsDialog(Dialog):
             child.destroy()
         accounts = self.app.config["accounts"]
         if not accounts:
-            tk.Label(self.rows, text=t("no_account"), font=(FONT, 10), fg=COLOR_ERROR).pack(anchor="w")
+            self.label(self.rows, t("no_account"), fg=COLOR_MUTED).pack(anchor="w")
         for account in accounts:
-            row = tk.Frame(self.rows)
-            row.pack(anchor="w", fill="x", pady=4)
-            labels = tk.Frame(row)
-            labels.pack(side="left", padx=(0, 16))
-            tk.Label(labels, text=account_label(account), font=(FONT, 10, "bold")).pack(anchor="w")
-            tk.Label(labels, text=self.app.account_status(account), font=(FONT, 9)).pack(anchor="w")
+            failing = account["id"] in self.app.sync_errors
+            waiting = self.app.account_problem(account) is not None
+            row = tk.Frame(self.rows, bg="white")
+            row.pack(anchor="w", fill="x", pady=3)
+            # Same coloured bar as an appointment in the agenda: here it tells the state of the account.
+            bar = COLOR_ERROR if failing else COLOR_LINE if waiting else COLOR_OK
+            tk.Frame(row, bg=bar, width=4).pack(side="left", fill="y")
+            labels = tk.Frame(row, bg="white")
+            labels.pack(side="left", padx=(10, 24), pady=4)
+            self.label(labels, account_label(account), font=(FONT, 10, "bold")).pack(anchor="w")
+            status_color = COLOR_ERROR if failing else COLOR_MUTED
+            self.label(labels, self.app.account_status(account), font=(FONT, 9), fg=status_color).pack(anchor="w")
             # Packed from the right edge: the first one ends up rightmost.
             actions = [
                 (t("remove"), partial(self.remove, account)),
@@ -653,11 +713,142 @@ class AccountsDialog(Dialog):
             if account["type"] == "caldav":
                 actions.append((t("calendars_button"), partial(self.app.ask_calendars, account["id"])))
             for text, command in actions:
-                tk.Button(row, text=text, font=(FONT, 9), command=command).pack(side="right", padx=(6, 0))
+                button(row, text, command, "link").pack(side="right", padx=(4, 0))
 
     def remove(self, account):
         if messagebox.askyesno("Calendar Alarm", t("remove_question", name=account_label(account)), parent=self):
             self.app.remove_account(account)
+
+
+class SettingsDialog(Dialog):
+    def __init__(self, app):
+        super().__init__(app, "settings", t("title_settings"), t("settings_intro"))
+        config = app.config
+        self.grid = tk.Frame(self.frame, bg="white")
+        self.grid.pack(anchor="w")
+        self.next_row = 0
+
+        self.section(t("section_alarm"))
+        self.lead = self.number(t("lead_label"), config["lead_minutes"], 0, 120, t("unit_minutes"))
+        self.snooze = self.number(t("snooze_label"), config["snooze_minutes"], 1, 60, t("unit_minutes"))
+        self.sounds = alarm_sounds()
+        # Compared the way Windows does: C:\Windows and C:\WINDOWS are the same folder.
+        current = os.path.normcase(config["sound"])
+        if current not in map(os.path.normcase, self.sounds.values()):
+            self.sounds[Path(config["sound"]).name] = config["sound"]
+        chosen = next(name for name, path in self.sounds.items() if os.path.normcase(path) == current)
+        extras = tk.Frame(self.grid, bg="white")
+        self.sound = self.choice(t("sound_label"), list(self.sounds), chosen, extras)
+        button(extras, t("sound_preview"), self.preview, "link").pack(side="left")
+        button(extras, t("sound_browse"), self.browse, "link").pack(side="left")
+        silences = [t("never") if minutes == 0 else t("minutes_value", minutes=minutes) for minutes in SILENCE_CHOICES]
+        silence = SILENCE_CHOICES.index(config["silence_after_minutes"]) if config["silence_after_minutes"] in SILENCE_CHOICES else 0
+        self.silence = self.choice(t("silence_label"), silences, silences[silence])
+        self.ignore_free = self.checkbox(t("ignore_free"), config["ignore_free"])
+
+        self.section(t("section_agenda"))
+        self.days = self.number(t("agenda_days_label"), config["agenda_days"], 1, 14, t("unit_days"))
+        self.show_all_day = self.checkbox(t("show_all_day"), config["show_all_day"])
+
+        self.section(t("section_general"))
+        self.languages = [None, *texts.LANGUAGES]
+        languages = [t("language_auto"), *texts.LANGUAGES.values()]
+        self.language = self.choice(t("language"), languages, languages[self.languages.index(config["language"])])
+        polls = [t("minutes_value", minutes=seconds // 60) for seconds in POLL_CHOICES]
+        poll = POLL_CHOICES.index(config["poll_seconds"]) if config["poll_seconds"] in POLL_CHOICES else 0
+        self.poll = self.choice(t("poll_label"), polls, polls[poll])
+        self.autostart = self.checkbox(t("autostart"), autostart_command() is not None)
+
+        button(self.footer, t("cancel"), self.close).pack(side="right")
+        button(self.footer, t("save"), self.submit, "primary").pack(side="right", padx=(0, 8))
+
+    # --- building blocks: one setting per row of the grid
+
+    def place(self, label, control, extra=None):
+        if label:
+            self.label(self.grid, label).grid(row=self.next_row, column=0, sticky="w", padx=(0, 18), pady=5)
+        control.grid(row=self.next_row, column=1, sticky="w", pady=5, columnspan=1 if label else 3)
+        if extra is not None:
+            extra.grid(row=self.next_row, column=2, sticky="w", padx=(8, 0))
+        self.next_row += 1
+
+    def section(self, title):
+        top = 0 if self.next_row == 0 else 14
+        self.label(self.grid, title, font=(FONT, 10, "bold"), fg=COLOR_ACCENT).grid(
+            row=self.next_row, column=0, columnspan=3, sticky="w", pady=(top, 2)
+        )
+        self.next_row += 1
+
+    def number(self, label, value, low, high, unit):
+        variable = tk.StringVar(self, value=str(value))
+        cell = tk.Frame(self.grid, bg="white")
+        tk.Spinbox(
+            cell, from_=low, to=high, width=5, font=(FONT, 10), textvariable=variable, relief="flat",
+            highlightthickness=1, highlightbackground="#c4c7cc", highlightcolor=COLOR_ACCENT,
+        ).pack(side="left")
+        self.label(cell, unit, fg=COLOR_MUTED).pack(side="left", padx=(8, 0))
+        self.place(label, cell)
+
+        def read():
+            try:
+                return min(high, max(low, int(variable.get())))
+            except ValueError:
+                return value
+
+        return read
+
+    def choice(self, label, values, selected, extra=None):
+        combobox = ttk.Combobox(self.grid, state="readonly", values=values, width=28, font=(FONT, 10))
+        combobox.set(selected)
+        self.place(label, combobox, extra)
+        return combobox
+
+    def checkbox(self, label, checked):
+        variable = tk.BooleanVar(self, value=checked)
+        control = tk.Checkbutton(
+            self.grid, text=label, variable=variable, font=(FONT, 10), bg="white", activebackground="white", fg=COLOR_TEXT
+        )
+        control.grid(row=self.next_row, column=0, columnspan=3, sticky="w", pady=3)
+        self.next_row += 1
+        return variable
+
+    # --- sound
+
+    def preview(self):
+        # Never over a real alarm: stopping the preview would silence it.
+        if not self.app.sound_playing:
+            winsound.PlaySound(self.sounds[self.sound.get()], winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+
+    def browse(self):
+        path = filedialog.askopenfilename(parent=self, filetypes=[(t("wav_files"), "*.wav")])
+        if path:
+            path = str(Path(path))
+            self.sounds[Path(path).name] = path
+            self.sound.config(values=list(self.sounds))
+            self.sound.set(Path(path).name)
+
+    # --- saving
+
+    def submit(self):
+        settings = {
+            "lead_minutes": self.lead(),
+            "snooze_minutes": self.snooze(),
+            "sound": self.sounds[self.sound.get()],
+            "silence_after_minutes": SILENCE_CHOICES[self.silence.current()],
+            "ignore_free": self.ignore_free.get(),
+            "agenda_days": self.days(),
+            "show_all_day": self.show_all_day.get(),
+            "language": self.languages[self.language.current()],
+            "poll_seconds": POLL_CHOICES[self.poll.current()],
+        }
+        autostart = self.autostart.get()
+        self.close()
+        self.app.apply_settings(settings, autostart)
+
+    def close(self):
+        if not self.app.sound_playing:
+            winsound.PlaySound(None, winsound.SND_PURGE)
+        super().close()
 
 
 class AlarmWindow(tk.Toplevel):
@@ -666,32 +857,32 @@ class AlarmWindow(tk.Toplevel):
         self.app = app
         self.event = event
         self.title(t("alarm_title"))
+        self.configure(bg="white")
         self.resizable(False, False)
         self.attributes("-topmost", True)
         # Closing the window must not silence the alarm for good.
         self.protocol("WM_DELETE_WINDOW", self.snooze)
 
-        frame = tk.Frame(self, padx=28, pady=22)
-        frame.pack()
-        self.countdown = tk.Label(frame, font=(FONT, 13, "bold"), fg=COLOR_ERROR)
+        tk.Frame(self, bg=COLOR_ERROR, height=6).pack(fill="x")
+        footer = tk.Frame(self, bg=COLOR_PANEL, padx=26, pady=12)
+        footer.pack(side="bottom", fill="x")
+        frame = tk.Frame(self, bg="white", padx=26, pady=20)
+        frame.pack(fill="both", expand=True)
+        self.countdown = tk.Label(frame, font=(FONT, 12, "bold"), bg="white", fg=COLOR_ERROR)
         self.countdown.pack(anchor="w")
-        tk.Label(frame, text=event.summary, font=(FONT, 20, "bold"), wraplength=520, justify="left").pack(
-            anchor="w", pady=(6, 6)
-        )
+        tk.Label(
+            frame, text=event.summary, font=(FONT, 20, "bold"), bg="white", fg=COLOR_TEXT, wraplength=520, justify="left"
+        ).pack(anchor="w", pady=(6, 8))
         details = f"{event.start:%H:%M} – {event.end:%H:%M}   ·   {event.calendar}"
-        tk.Label(frame, text=details, font=(FONT, 11)).pack(anchor="w")
+        tk.Label(frame, text=details, font=(FONT, 11), bg="white", fg=COLOR_MUTED).pack(anchor="w")
         if event.location:
-            tk.Label(frame, text=event.location, font=(FONT, 11), wraplength=520, justify="left").pack(anchor="w")
-        buttons = tk.Frame(frame)
-        buttons.pack(anchor="e", pady=(20, 0))
+            tk.Label(
+                frame, text=event.location, font=(FONT, 11), bg="white", fg=COLOR_MUTED, wraplength=520, justify="left"
+            ).pack(anchor="w")
         # takefocus=0: a key typed elsewhere when the window pops up must not press a button.
-        tk.Button(
-            buttons, text=t("stop"), font=(FONT, 12, "bold"), width=14, takefocus=0, command=self.stop
-        ).pack(side="left", padx=(0, 10))
         snooze_text = t("snooze", minutes=app.config["snooze_minutes"])
-        tk.Button(buttons, text=snooze_text, font=(FONT, 12), width=14, takefocus=0, command=self.snooze).pack(
-            side="left"
-        )
+        button(footer, snooze_text, self.snooze, takefocus=0, width=14).pack(side="right")
+        button(footer, t("stop"), self.stop, "primary", takefocus=0, width=14).pack(side="right", padx=(0, 10))
 
         self.update_idletasks()
         x = (self.winfo_screenwidth() - self.winfo_width()) // 2 + 30 * index
@@ -749,7 +940,7 @@ class AgendaWindow(tk.Toplevel):
         self.subtitle.pack(anchor="w")
         tk.Frame(self, bg=COLOR_LINE, height=1).pack(fill="x")
 
-        self.legend = tk.Frame(self, bg="#f6f7f8", padx=22, pady=8)
+        self.legend = tk.Frame(self, bg=COLOR_PANEL, padx=22, pady=8)
         self.legend.pack(side="bottom", fill="x")
         scrollbar = tk.Scrollbar(self, orient="vertical")
         scrollbar.pack(side="right", fill="y")
@@ -775,7 +966,8 @@ class AgendaWindow(tk.Toplevel):
         self.timer = self.after(30_000, self.render)
         app = self.app
         now = datetime.now().astimezone()
-        self.subtitle.config(text=f"{t('agenda_subtitle', days=AGENDA_DAYS)}  ·  {app.status_text()}")
+        days = app.config["agenda_days"]
+        self.subtitle.config(text=f"{t('agenda_subtitle', days=days)}  ·  {app.status_text()}")
         for frame in (self.days, self.legend):
             for child in frame.winfo_children():
                 child.destroy()
@@ -786,13 +978,13 @@ class AgendaWindow(tk.Toplevel):
             tk.Label(self.days, text=t("agenda_no_account"), font=(FONT, 10), bg="white", fg=COLOR_MUTED).pack(
                 anchor="w", pady=(18, 8)
             )
-            tk.Button(self.days, text=t("menu_accounts"), font=(FONT, 10), command=app.show_accounts).pack(anchor="w")
+            button(self.days, t("menu_accounts"), app.show_accounts, "primary").pack(anchor="w")
             return
 
-        events = list(app.events.values())
+        events = [event for event in app.events.values() if app.config["show_all_day"] or not event.all_day]
         upcoming = [event for event in events if not event.all_day and event.start > now]
         next_event = min(upcoming, key=lambda event: event.start, default=None)
-        for offset, (day, day_events) in enumerate(agenda_days(events, now.date(), AGENDA_DAYS)):
+        for offset, (day, day_events) in enumerate(agenda_days(events, now.date(), days)):
             name = texts.day_name(day)
             title = f"{t('today')}  ·  {name}" if offset == 0 else f"{t('tomorrow')}  ·  {name}" if offset == 1 else name
             tk.Label(
@@ -924,30 +1116,17 @@ class App:
         def item(key, action):
             return pystray.MenuItem(lambda _: t(key), lambda: self.post(action))
 
-        languages = [
-            pystray.MenuItem(
-                name,
-                partial(self.post, partial(self.set_language, code)),
-                checked=lambda _, code=code: texts.language() == code,
-                radio=True,
-            )
-            for code, name in texts.LANGUAGES.items()
-        ]
         return pystray.Menu(
             pystray.MenuItem(lambda _: self.status_text(), None, enabled=False),
             pystray.MenuItem(lambda _: self.next_text(), None, enabled=False),
             pystray.Menu.SEPARATOR,
-            # default=True: also what a plain click on the icon does.
-            pystray.MenuItem(lambda _: t("menu_agenda"), lambda: self.post(self.show_agenda), default=True),
+            # Hidden: it gives a plain click on the icon its action, without a bold entry in the menu.
+            pystray.MenuItem("agenda", lambda: self.post(self.show_agenda), default=True, visible=False),
+            item("menu_agenda", self.show_agenda),
             item("sync_now", self.fetcher_wake),
             item("test_alarm", self.test_alarm),
             item("menu_accounts", self.show_accounts),
-            pystray.MenuItem(
-                lambda _: t("autostart"),
-                lambda: self.post(self.toggle_autostart),
-                checked=lambda _: autostart_command() is not None,
-            ),
-            pystray.MenuItem(lambda _: t("language"), pystray.Menu(*languages)),
+            item("menu_settings", self.show_settings),
             item("open_log", lambda: os.startfile(LOG_PATH)),
             pystray.Menu.SEPARATOR,
             item("quit", self.quit),
@@ -973,17 +1152,27 @@ class App:
     def fetcher_wake(self):
         self.fetcher.wake.set()
 
-    def toggle_autostart(self):
-        set_autostart(autostart_command() is None)
-        self.tray.update_menu()
-
     def set_language(self, code):
         self.config["language"] = code
         texts.set_language(code)
-        # Open settings windows were written in the previous language.
+        # Open windows were written in the previous language.
         for dialog in list(self.dialogs.values()):
             dialog.close()
         self.save_config()
+
+    def show_settings(self):
+        self.open("settings", lambda: SettingsDialog(self))
+
+    def apply_settings(self, settings, autostart):
+        language = settings.pop("language")
+        self.config.update(settings)
+        if autostart != (autostart_command() is not None):
+            set_autostart(autostart)
+        log.info("settings saved: %s", settings)
+        if language != self.config["language"]:
+            self.set_language(language)
+        else:
+            self.save_config()
 
     # --- accounts -------------------------------------------------------
 
@@ -1120,7 +1309,10 @@ class App:
             return
         now = datetime.now().astimezone()
         if account_id not in self.last_sync or account_id in self.sync_errors:
-            log.info("%s: sync ok, %d events in the next %d days", account_label(account), len(events), AGENDA_DAYS)
+            log.info(
+                "%s: sync ok, %d events in the next %d days",
+                account_label(account), len(events), self.config["agenda_days"],
+            )
         self.account_events[account_id] = {event.key: event for event in events}
         self.last_sync[account_id] = now
         self.sync_errors.pop(account_id, None)
@@ -1177,12 +1369,18 @@ class App:
         handled = self.acked.keys() | self.snoozed.keys() | self.windows.keys()
         lead = timedelta(minutes=self.config["lead_minutes"])
         grace = timedelta(minutes=self.config["late_grace_minutes"])
-        for event in due_events(self.events.values(), handled, now, lead, grace):
+        ringable = [event for event in self.events.values() if not (event.free and self.config["ignore_free"])]
+        for event in due_events(ringable, handled, now, lead, grace):
             self.ring(event)
         for key, (ring_at, event) in list(self.snoozed.items()):
             if now >= ring_at:
                 del self.snoozed[key]
                 self.ring(event)
+
+        silence_after = self.config["silence_after_minutes"]
+        if self.sound_playing and silence_after and now - self.ringing_since >= timedelta(minutes=silence_after):
+            # Nobody is there: the windows stay, the noise stops.
+            self.set_sound(False)
 
         self.refresh_health()
         self.root.after(TICK_MS, self.tick)
@@ -1190,6 +1388,7 @@ class App:
     def ring(self, event):
         log.info("alarm: %s at %s", event.summary, event.start.isoformat())
         self.windows[event.key] = AlarmWindow(self, event, len(self.windows))
+        self.ringing_since = datetime.now().astimezone()
         self.set_sound(True)
 
     def close_window(self, key):
@@ -1317,7 +1516,7 @@ def check():
     for account in app.config["accounts"]:
         try:
             events = fetcher.fetch(account, get_secret(account))
-            log.info("check: %s: %d events in the next %d days", account_label(account), len(events), AGENDA_DAYS)
+            log.info("check: %s: %d events", account_label(account), len(events))
         except Exception as exc:
             ok = False
             log.error("check: %s: %r", account_label(account), exc)

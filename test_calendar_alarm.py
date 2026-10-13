@@ -94,6 +94,12 @@ class ExtractEventsTest(unittest.TestCase):
         self.assertEqual(timed.start.utcoffset(), datetime.now().astimezone().utcoffset())
         self.assertEqual(self.events["accepted"].end - self.events["accepted"].start, timedelta(minutes=30))
 
+    def test_appointments_marked_free_are_flagged(self):
+        marked = ICS.replace("UID:timed", "UID:timed\nTRANSP:TRANSPARENT")
+        events = {e.key.split("|")[0]: e for e in extract_events(components(marked), "Perso", set())}
+        self.assertTrue(events["timed"].free)
+        self.assertFalse(events["accepted"].free)
+
     def test_key_changes_when_the_event_moves(self):
         moved = extract_events(components(ICS.replace("20261013T120000Z", "20261013T121500Z")), "Perso", set())
         self.assertNotEqual(moved[0].key, self.events["timed"].key)
@@ -352,7 +358,7 @@ class AppTest(unittest.TestCase):
         self.app.edit_account(None, PROVIDER["google"])
         self.app.root.update()
         dialog = self.app.dialogs["ics"]
-        self.assertEqual(dialog.label.get(), "Google Agenda")
+        self.assertEqual(dialog.label_entry.get(), "Google Agenda")
         dialog.url.insert(0, "file:///C:/secret.txt")
         dialog.submit()
         self.assertEqual(len(self.app.config["accounts"]), 1)
@@ -401,7 +407,81 @@ class AppTest(unittest.TestCase):
         self.assertFalse(self.app.dialogs)
         self.app.show_accounts()
         self.app.root.update()
-        self.assertIn("accounts and calendars", self.app.dialogs["accounts"].title())
+        self.assertIn("Calendar sync", self.app.dialogs["accounts"].title())
+
+    # --- settings
+
+    def test_settings_are_applied_and_saved(self):
+        self.app.show_settings()
+        self.app.root.update()
+        dialog = self.app.dialogs["settings"]
+        self.assertIn("Alarm 01", dialog.sound.cget("values"))
+        self.assertEqual(dialog.sound.get(), "Alarm 01")
+        dialog.lead = lambda: 15
+        dialog.days = lambda: 3
+        dialog.sound.set("Ring 02")
+        dialog.silence.current(3)
+        dialog.ignore_free.set(True)
+        dialog.language.current(2)
+        self.addCleanup(texts.set_language, "fr")
+        with (
+            mock.patch("calendar_alarm.autostart_command", return_value=None),
+            mock.patch("calendar_alarm.set_autostart") as set_autostart,
+        ):
+            dialog.autostart.set(True)
+            dialog.submit()
+        config = self.app.config
+        self.assertEqual(
+            (config["lead_minutes"], config["agenda_days"], config["silence_after_minutes"], config["ignore_free"]),
+            (15, 3, 5, True),
+        )
+        self.assertTrue(config["sound"].lower().endswith("ring02.wav"))
+        self.assertEqual((config["language"], texts.language()), ("en", "en"))
+        set_autostart.assert_called_once_with(True)
+        self.assertNotIn("settings", self.app.dialogs)
+        self.assertEqual(self.save_json.call_args.args[1]["lead_minutes"], 15)
+
+    def test_out_of_range_numbers_are_brought_back(self):
+        self.app.show_settings()
+        dialog = self.app.dialogs["settings"]
+        entry = [
+            control
+            for cell in dialog.grid.winfo_children()
+            for control in cell.winfo_children()
+            if isinstance(control, calendar_alarm.tk.Spinbox)
+        ][0]
+        for typed, kept in (("999", 120), ("-3", 0), ("abc", 10), ("25", 25)):
+            entry.delete(0, "end")
+            entry.insert(0, typed)
+            self.assertEqual(dialog.lead(), kept)
+
+    def test_sound_stops_by_itself_but_the_window_stays(self):
+        self.app.config["silence_after_minutes"] = 2
+        self.app.on_events("a", [event("soon", self.now + timedelta(minutes=4))])
+        self.tick()
+        self.assertTrue(self.app.sound_playing)
+        self.app.ringing_since = self.now - timedelta(minutes=3)
+        self.tick()
+        self.assertFalse(self.app.sound_playing)
+        self.assertEqual(list(self.app.windows), ["soon"])
+
+    def test_free_appointments_ring_unless_told_otherwise(self):
+        start = self.now + timedelta(minutes=4)
+        free = Event("free", start, start + timedelta(hours=1), "FYI", "", "cal", free=True)
+        self.app.config["ignore_free"] = True
+        self.app.on_events("a", [free])
+        self.tick()
+        self.assertFalse(self.app.windows)
+        self.app.config["ignore_free"] = False
+        self.tick()
+        self.assertEqual(list(self.app.windows), ["free"])
+
+    def test_clicking_the_icon_opens_the_agenda_without_a_bold_menu_entry(self):
+        default = [entry for entry in self.app.build_menu().items if entry.default]
+        self.assertEqual([entry.visible for entry in default], [False])
+        default[0](None)
+        self.app.inbox.get_nowait()()
+        self.assertIn("agenda", self.app.dialogs)
 
     # --- agenda
 
@@ -426,7 +506,7 @@ class AppTest(unittest.TestCase):
         window = self.app.dialogs["agenda"]
         shown = self.labels(window.days)
         self.assertEqual(sum(text.startswith(("Aujourd'hui", "Demain")) for text in shown), 2)
-        self.assertEqual(shown.count("Rien de prévu"), calendar_alarm.AGENDA_DAYS - 2)
+        self.assertEqual(shown.count("Rien de prévu"), self.app.config["agenda_days"] - 2)
         for expected in ("Point projet", "Salle 2  ·  Perso", "Férié", "Journée", "12:00", "13:00"):
             self.assertIn(expected, shown)
         self.assertEqual(self.labels(window.legend), ["Perso", "Google"])
