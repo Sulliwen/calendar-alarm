@@ -1,6 +1,6 @@
 ; Per-user installer: no administrator rights needed.
 #define AppName "Calendar Alarm"
-#define AppVersion "1.1.1"
+#define AppVersion "1.2.0"
 #define AppExe "CalendarAlarm.exe"
 
 [Setup]
@@ -19,8 +19,11 @@ UninstallDisplayIcon={app}\{#AppExe}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+; The wizard follows the language of Windows, like the program does.
+ShowLanguageDialog=no
 
 [Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "french"; MessagesFile: "compiler:Languages\French.isl"
 
 [Files]
@@ -34,7 +37,7 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "CalendarAlarm"; Flags: dontcreatekey uninsdeletevalue
 
 [Run]
-Filename: "{app}\{#AppExe}"; Description: "Lancer {#AppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 ; Saved passwords and iCal addresses (Windows Credential Manager).

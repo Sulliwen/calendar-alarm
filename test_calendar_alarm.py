@@ -1,10 +1,14 @@
+import re
+import string
 import unittest
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import icalendar
 
 import calendar_alarm
+import texts
 from calendar_alarm import Event, due_events, extract_events
 
 ICS = """BEGIN:VCALENDAR
@@ -58,6 +62,7 @@ END:VCALENDAR
 
 CALDAV = {"id": "a", "type": "caldav", "url": "https://example.com", "username": "AB12345", "calendars": ["url/mine"]}
 FEED = {"id": "g", "type": "ics", "name": "Google"}
+PROVIDER = {provider["key"]: provider for provider in texts.PROVIDERS}
 
 
 def event(key, start):
@@ -117,6 +122,30 @@ class IcsUrlTest(unittest.TestCase):
             self.assertIsNone(normalize(refused))
 
 
+class TextsTest(unittest.TestCase):
+    def test_both_languages_say_the_same_things(self):
+        french, english = texts.STRINGS["fr"], texts.STRINGS["en"]
+        self.assertEqual(set(french), set(english))
+        for key in french:
+            fields = [{name for _, name, _, _ in string.Formatter().parse(text[key]) if name} for text in (french, english)]
+            self.assertEqual(*fields, key)
+
+    def test_every_provider_has_a_name_and_instructions(self):
+        for provider in texts.PROVIDERS:
+            for language in texts.STRINGS.values():
+                self.assertTrue(language[f"provider_{provider['key']}"])
+                self.assertTrue(language[f"help_{provider['key']}"])
+
+    def test_french_addresses_the_user_formally(self):
+        informal = re.compile(r"\b(tu|ton|ta|tes|toi)\b", re.IGNORECASE)
+        self.assertEqual([key for key, text in texts.STRINGS["fr"].items() if informal.search(text)], [])
+
+    def test_no_user_text_is_left_in_the_program(self):
+        source = Path(calendar_alarm.__file__).read_text(encoding="utf-8")
+        code = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
+        self.assertEqual(re.findall(r"[éèêàçùôî«»…]", code.replace('show="•"', "")), [])
+
+
 class ConfigTest(unittest.TestCase):
     def test_single_account_configuration_is_migrated(self):
         legacy = {"username": "AB12345", "calendars": ["url/mine"], "lead_minutes": 15}
@@ -154,6 +183,7 @@ class AppTest(unittest.TestCase):
         self.keyring.get_password.return_value = "secret"
         with mock.patch("calendar_alarm.load_json", return_value={}):
             self.app = calendar_alarm.App()
+        texts.set_language("fr")
         self.app.tray = mock.Mock()
         self.app.fetcher = mock.Mock()
         self.caldav, self.feed = dict(CALDAV), dict(FEED)
@@ -285,16 +315,17 @@ class AppTest(unittest.TestCase):
 
     def test_adding_and_removing_an_ical_feed(self):
         self.app.show_accounts()
-        self.app.edit_account(None, "ics")
+        self.app.edit_account(None, PROVIDER["google"])
         self.app.root.update()
         dialog = self.app.dialogs["ics"]
+        self.assertEqual(dialog.label.get(), "Google Agenda")
         dialog.url.insert(0, "file:///C:/secret.txt")
         dialog.submit()
         self.assertEqual(len(self.app.config["accounts"]), 1)
 
         dialog.tested(None, "Google", "https://calendar.test/basic.ics")
         added = self.app.config["accounts"][1]
-        self.assertEqual((added["type"], added["name"]), ("ics", "Google"))
+        self.assertEqual((added["type"], added["provider"], added["name"]), ("ics", "google", "Google"))
         self.keyring.set_password.assert_called_once_with(
             f"calendar-alarm:{added['id']}", "secret", "https://calendar.test/basic.ics"
         )
@@ -313,6 +344,30 @@ class AppTest(unittest.TestCase):
         with mock.patch("calendar_alarm.autostart_command", return_value=calendar_alarm.launch_command()):
             self.app.run()
         self.assertIsInstance(self.app.dialogs["accounts"], calendar_alarm.AccountsDialog)
+
+    def test_dropdown_offers_every_provider_and_prefills_its_server(self):
+        self.app.show_accounts()
+        accounts = self.app.dialogs["accounts"]
+        self.assertEqual(len(accounts.provider.cget("values")), len(texts.PROVIDERS))
+        accounts.provider.current(texts.PROVIDERS.index(PROVIDER["icloud"]))
+        accounts.add()
+        self.app.root.update()
+        dialog = self.app.dialogs["caldav"]
+        self.assertEqual(dialog.url.get(), "https://caldav.icloud.com")
+        dialog.tested(None, "https://caldav.icloud.com", "me@icloud.com", "app-password")
+        self.assertEqual(self.app.config["accounts"][1]["provider"], "icloud")
+
+    def test_changing_language_translates_menus_and_windows(self):
+        self.app.show_accounts()
+        self.assertEqual(self.app.next_text(), "Aucun rendez-vous dans les 24 h")
+        self.app.set_language("en")
+        self.addCleanup(texts.set_language, "fr")
+        self.assertEqual(self.app.next_text(), "No appointment in the next 24 h")
+        self.assertEqual(self.app.config["language"], "en")
+        self.assertFalse(self.app.dialogs)
+        self.app.show_accounts()
+        self.app.root.update()
+        self.assertIn("accounts and calendars", self.app.dialogs["accounts"].title())
 
     # --- health
 

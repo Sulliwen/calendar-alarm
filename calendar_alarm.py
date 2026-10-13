@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 from urllib.parse import unquote, urlsplit
 
 import caldav
@@ -42,6 +42,9 @@ import recurring_ical_events
 from caldav.lib.error import AuthorizationError
 from PIL import Image, ImageDraw, ImageTk
 
+import texts
+from texts import PROVIDERS, t
+
 APP = "calendar-alarm"
 DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / APP
 CONFIG_PATH = DATA_DIR / "config.json"
@@ -50,10 +53,12 @@ LOG_PATH = DATA_DIR / "calendar-alarm.log"
 
 INFOMANIAK_URL = "https://sync.infomaniak.com"
 DEFAULT_CONFIG = {
-    # CalDAV: {"id", "type": "caldav", "url", "username", "calendars": [urls] or None until chosen}
-    # iCal:   {"id", "type": "ics", "name"}
+    # CalDAV: {"id", "type": "caldav", "provider", "url", "username", "calendars": [urls] or None until chosen}
+    # iCal:   {"id", "type": "ics", "provider", "name"}
     # Passwords and iCal addresses live in the Windows Credential Manager, not here.
     "accounts": [],
+    # "fr" or "en"; None follows the language of Windows.
+    "language": None,
     "lead_minutes": 10,
     "snooze_minutes": 5,
     # An event found after it started still rings during this many minutes.
@@ -163,6 +168,15 @@ def load_config():
     return {**copy.deepcopy(DEFAULT_CONFIG), **stored}
 
 
+def provider_of(account):
+    """The provider an account was created from; older accounts did not record it."""
+    key = account.get("provider")
+    if key is None:
+        infomaniak = account["type"] == "caldav" and account["url"].startswith(INFOMANIAK_URL)
+        key = "infomaniak" if infomaniak else account["type"]
+    return next(provider for provider in PROVIDERS if provider["key"] == key)
+
+
 def account_label(account):
     if account["type"] == "ics":
         return account["name"]
@@ -239,7 +253,7 @@ def extract_events(components, calendar_name, my_addresses):
                 key=f"{component.get('UID')}|{start.isoformat()}",
                 start=start,
                 end=end,
-                summary=str(component.get("SUMMARY") or "(sans titre)"),
+                summary=str(component.get("SUMMARY") or t("untitled")),
                 location=str(component.get("LOCATION") or ""),
                 calendar=calendar_name,
             )
@@ -441,20 +455,20 @@ class Dialog(tk.Toplevel):
         row.pack(anchor="e", pady=(8, 0))
         self.submit_button = tk.Button(row, text=submit_text, font=(FONT, 10), command=submit)
         self.submit_button.pack(side="left", padx=(0, 8))
-        tk.Button(row, text="Annuler", font=(FONT, 10), command=self.close).pack(side="left")
+        tk.Button(row, text=t("cancel"), font=(FONT, 10), command=self.close).pack(side="left")
 
     def test(self, check, *args):
         """Runs check(*args) off the UI thread, then save(*args) unless it returned an error message."""
         self.submit_button.config(state="disabled")
-        self.status.config(text="Test de la connexion…", fg="black")
+        self.status.config(text=t("testing"), fg="black")
 
         def run():
             try:
                 error = check(*args)
             except Refused:
-                error = "Refusé par le serveur : vérifie la saisie."
+                error = t("refused_input")
             except Exception as exc:
-                error = f"Connexion impossible : {exc or type(exc).__name__}"
+                error = t("connection_failed", error=str(exc) or type(exc).__name__)
             self.app.post(partial(self.tested, error, *args))
 
         threading.Thread(target=run, daemon=True).start()
@@ -475,51 +489,55 @@ class Dialog(tk.Toplevel):
 
 
 class CaldavDialog(Dialog):
-    def __init__(self, app, account, message):
-        super().__init__(app, "caldav", "compte CalDAV")
+    def __init__(self, app, account, provider, message):
+        super().__init__(app, "caldav", t("title_caldav"))
         self.account = account
+        self.provider = provider
         self.text(message)
         grid = tk.Frame(self.frame)
         grid.pack(anchor="w")
-        self.url = self.field(grid, 0, "Serveur", account["url"] if account else INFOMANIAK_URL)
-        self.username = self.field(grid, 1, "Identifiant (ex. AB12345)", account["username"] if account else "")
-        self.password = self.field(grid, 2, "Mot de passe d'application", "", show="•")
-        self.buttons("Tester et enregistrer", self.submit)
+        self.url = self.field(grid, 0, t("server"), account["url"] if account else provider["url"])
+        self.username = self.field(grid, 1, t("username"), account["username"] if account else "")
+        self.password = self.field(grid, 2, t("app_password"), "", show="•")
+        self.buttons(t("test_and_save"), self.submit)
         self.bind("<Return>", lambda _: self.submit())
         (self.password if account else self.username).focus_set()
 
     def submit(self):
         url, username, password = self.url.get().strip(), self.username.get().strip(), self.password.get()
         if not (url and username and password):
-            self.status.config(text="Les trois champs sont obligatoires.")
+            self.status.config(text=t("three_required"))
             return
         self.test(self.check, url, username, password)
 
     def check(self, url, username, password):
         if not discover(url, username, password, self.app.config).calendars:
-            return "Connexion réussie, mais aucun agenda trouvé."
+            return t("no_calendar_found")
 
     def save(self, url, username, password):
-        self.app.save_caldav_account(self.account, url, username, password)
+        self.app.save_caldav_account(self.account, self.provider, url, username, password)
 
 
 class IcsDialog(Dialog):
-    def __init__(self, app, account, message):
-        super().__init__(app, "ics", "adresse iCal")
+    def __init__(self, app, account, provider, message):
+        super().__init__(app, "ics", t("title_ics"))
         self.account = account
+        self.provider = provider
         self.text(message)
         grid = tk.Frame(self.frame)
         grid.pack(anchor="w")
-        self.label = self.field(grid, 0, "Nom de l'agenda", account["name"] if account else "Google")
-        self.url = self.field(grid, 1, "Adresse secrète iCal", "")
-        self.buttons("Tester et enregistrer", self.submit)
+        # A named provider makes a sensible default name; "other" does not.
+        default_name = "" if provider["key"] == "ics" else t(f"provider_{provider['key']}")
+        self.label = self.field(grid, 0, t("calendar_name"), account["name"] if account else default_name)
+        self.url = self.field(grid, 1, t("ics_address"), "")
+        self.buttons(t("test_and_save"), self.submit)
         self.bind("<Return>", lambda _: self.submit())
         self.url.focus_set()
 
     def submit(self):
         name, url = self.label.get().strip(), normalize_ics_url(self.url.get())
         if not name or url is None:
-            self.status.config(text="Il faut un nom et une adresse commençant par https://.")
+            self.status.config(text=t("ics_invalid"))
             return
         self.test(self.check, name, url)
 
@@ -527,17 +545,17 @@ class IcsDialog(Dialog):
         try:
             icalendar.Calendar.from_ical(download_ics(url))
         except ValueError:
-            return "Cette adresse ne renvoie pas un agenda au format iCal."
+            return t("not_ical")
 
     def save(self, name, url):
-        self.app.save_ics_account(self.account, name, url)
+        self.app.save_ics_account(self.account, self.provider, name, url)
 
 
 class CalendarsDialog(Dialog):
     def __init__(self, app, account):
-        super().__init__(app, "calendars", "agendas surveillés")
+        super().__init__(app, "calendars", t("title_calendars"))
         self.account = account
-        self.text(f"{account_label(account)}\nCoche les agendas dont les rendez-vous doivent sonner.")
+        self.text(t("choose_calendars", name=account_label(account)))
         names = app.calendar_names[account["id"]]
         if account["calendars"] is None:
             # First choice: propose the calendar named after the account owner.
@@ -548,12 +566,12 @@ class CalendarsDialog(Dialog):
         for url, name in sorted(names.items(), key=lambda item: item[1].lower()):
             self.choices[url] = tk.BooleanVar(self, value=url in selected)
             tk.Checkbutton(self.frame, text=name, variable=self.choices[url], font=(FONT, 10)).pack(anchor="w")
-        self.buttons("Enregistrer", self.submit)
+        self.buttons(t("save"), self.submit)
 
     def submit(self):
         urls = [url for url, checked in self.choices.items() if checked.get()]
         if not urls:
-            self.status.config(text="Coche au moins un agenda.")
+            self.status.config(text=t("at_least_one"))
             return
         self.app.save_calendars(self.account, urls)
         self.close()
@@ -561,31 +579,30 @@ class CalendarsDialog(Dialog):
 
 class AccountsDialog(Dialog):
     def __init__(self, app):
-        super().__init__(app, "accounts", "comptes et agendas")
-        self.text(
-            "Ajoute ici tous tes agendas : chaque rendez-vous sonnera "
-            f"{app.config['lead_minutes']} minutes avant son début."
-        )
+        super().__init__(app, "accounts", t("title_accounts"))
+        self.text(t("accounts_intro", minutes=app.config["lead_minutes"]))
         self.rows = tk.Frame(self.frame)
         self.rows.pack(anchor="w", fill="x")
         add = tk.Frame(self.frame)
         add.pack(anchor="w", pady=(14, 0))
-        for text, kind in (
-            ("Ajouter un compte CalDAV (Infomaniak…)", "caldav"),
-            ("Ajouter une adresse iCal (Google…)", "ics"),
-        ):
-            tk.Button(add, text=text, font=(FONT, 10), command=partial(app.edit_account, None, kind)).pack(
-                side="left", padx=(0, 8)
-            )
-        tk.Button(self.frame, text="Fermer", font=(FONT, 10), command=self.close).pack(anchor="e", pady=(14, 0))
+        tk.Label(add, text=t("add_calendar"), font=(FONT, 10)).pack(side="left", padx=(0, 8))
+        names = [t(f"provider_{provider['key']}") for provider in PROVIDERS]
+        self.provider = ttk.Combobox(add, state="readonly", values=names, width=30, font=(FONT, 10))
+        self.provider.current(0)
+        self.provider.pack(side="left", padx=(0, 8))
+        tk.Button(add, text=t("add"), font=(FONT, 10), command=self.add).pack(side="left")
+        tk.Button(self.frame, text=t("close"), font=(FONT, 10), command=self.close).pack(anchor="e", pady=(14, 0))
         self.refresh()
+
+    def add(self):
+        self.app.edit_account(None, PROVIDERS[self.provider.current()])
 
     def refresh(self):
         for child in self.rows.winfo_children():
             child.destroy()
         accounts = self.app.config["accounts"]
         if not accounts:
-            tk.Label(self.rows, text="Aucun agenda pour l'instant.", font=(FONT, 10), fg=COLOR_ERROR).pack(anchor="w")
+            tk.Label(self.rows, text=t("no_account"), font=(FONT, 10), fg=COLOR_ERROR).pack(anchor="w")
         for account in accounts:
             row = tk.Frame(self.rows)
             row.pack(anchor="w", fill="x", pady=4)
@@ -595,17 +612,16 @@ class AccountsDialog(Dialog):
             tk.Label(labels, text=self.app.account_status(account), font=(FONT, 9)).pack(anchor="w")
             # Packed from the right edge: the first one ends up rightmost.
             actions = [
-                ("Supprimer", partial(self.remove, account)),
-                ("Modifier…", partial(self.app.edit_account, account, account["type"])),
+                (t("remove"), partial(self.remove, account)),
+                (t("edit"), partial(self.app.edit_account, account)),
             ]
             if account["type"] == "caldav":
-                actions.append(("Agendas…", partial(self.app.ask_calendars, account["id"])))
+                actions.append((t("calendars_button"), partial(self.app.ask_calendars, account["id"])))
             for text, command in actions:
                 tk.Button(row, text=text, font=(FONT, 9), command=command).pack(side="right", padx=(6, 0))
 
     def remove(self, account):
-        question = f"Supprimer « {account_label(account)} » ? Ses rendez-vous ne sonneront plus."
-        if messagebox.askyesno("Calendar Alarm", question, parent=self):
+        if messagebox.askyesno("Calendar Alarm", t("remove_question", name=account_label(account)), parent=self):
             self.app.remove_account(account)
 
 
@@ -614,7 +630,7 @@ class AlarmWindow(tk.Toplevel):
         super().__init__(app.root)
         self.app = app
         self.event = event
-        self.title("Rendez-vous")
+        self.title(t("alarm_title"))
         self.resizable(False, False)
         self.attributes("-topmost", True)
         # Closing the window must not silence the alarm for good.
@@ -635,9 +651,9 @@ class AlarmWindow(tk.Toplevel):
         buttons.pack(anchor="e", pady=(20, 0))
         # takefocus=0: a key typed elsewhere when the window pops up must not press a button.
         tk.Button(
-            buttons, text="Arrêter", font=(FONT, 12, "bold"), width=14, takefocus=0, command=self.stop
+            buttons, text=t("stop"), font=(FONT, 12, "bold"), width=14, takefocus=0, command=self.stop
         ).pack(side="left", padx=(0, 10))
-        snooze_text = f"Rappel {app.config['snooze_minutes']} min"
+        snooze_text = t("snooze", minutes=app.config["snooze_minutes"])
         tk.Button(buttons, text=snooze_text, font=(FONT, 12), width=14, takefocus=0, command=self.snooze).pack(
             side="left"
         )
@@ -650,17 +666,19 @@ class AlarmWindow(tk.Toplevel):
         self.refresh()
 
     def refresh(self):
-        if not self.winfo_exists():
-            return
         minutes = round((self.event.start - datetime.now().astimezone()).total_seconds() / 60)
         if minutes > 0:
-            text = f"Rendez-vous dans {minutes} min"
+            text = t("in_minutes", minutes=minutes)
         elif minutes == 0:
-            text = "Rendez-vous maintenant"
+            text = t("now")
         else:
-            text = f"Rendez-vous commencé depuis {-minutes} min"
+            text = t("started_since", minutes=-minutes)
         self.countdown.config(text=text)
-        self.after(1000, self.refresh)
+        self.timer = self.after(1000, self.refresh)
+
+    def destroy(self):
+        self.after_cancel(self.timer)
+        super().destroy()
 
     def stop(self):
         self.app.stop_alarm(self.event)
@@ -685,6 +703,7 @@ def make_icon(color):
 class App:
     def __init__(self):
         self.config = load_config()
+        texts.set_language(self.config["language"])
         # key -> ISO start, for the alarms stopped by the user.
         self.acked = load_json(STATE_PATH, {}).get("acked", {})
         # account id -> {key: event}, and the merged view the alarms run on
@@ -720,24 +739,35 @@ class App:
         self.inbox.put(action)
 
     def build_menu(self):
-        def item(text, action):
-            return pystray.MenuItem(text, lambda: self.post(action))
+        # Texts are looked up when the menu opens, so that it follows a change of language.
+        def item(key, action):
+            return pystray.MenuItem(lambda _: t(key), lambda: self.post(action))
 
+        languages = [
+            pystray.MenuItem(
+                name,
+                partial(self.post, partial(self.set_language, code)),
+                checked=lambda _, code=code: texts.language() == code,
+                radio=True,
+            )
+            for code, name in texts.LANGUAGES.items()
+        ]
         return pystray.Menu(
             pystray.MenuItem(lambda _: self.status_text(), None, enabled=False),
             pystray.MenuItem(lambda _: self.next_text(), None, enabled=False),
             pystray.Menu.SEPARATOR,
-            item("Synchroniser maintenant", self.fetcher_wake),
-            item("Tester l'alarme", self.test_alarm),
-            item("Comptes et agendas…", self.show_accounts),
+            item("sync_now", self.fetcher_wake),
+            item("test_alarm", self.test_alarm),
+            item("menu_accounts", self.show_accounts),
             pystray.MenuItem(
-                "Lancer au démarrage de Windows",
+                lambda _: t("autostart"),
                 lambda: self.post(self.toggle_autostart),
                 checked=lambda _: autostart_command() is not None,
             ),
-            item("Ouvrir le journal", lambda: os.startfile(LOG_PATH)),
+            pystray.MenuItem(lambda _: t("language"), pystray.Menu(*languages)),
+            item("open_log", lambda: os.startfile(LOG_PATH)),
             pystray.Menu.SEPARATOR,
-            item("Quitter", self.quit),
+            item("quit", self.quit),
         )
 
     def run(self):
@@ -764,6 +794,14 @@ class App:
         set_autostart(autostart_command() is None)
         self.tray.update_menu()
 
+    def set_language(self, code):
+        self.config["language"] = code
+        texts.set_language(code)
+        # Open settings windows were written in the previous language.
+        for dialog in list(self.dialogs.values()):
+            dialog.close()
+        self.save_config()
+
     # --- accounts -------------------------------------------------------
 
     def account(self, account_id):
@@ -781,9 +819,10 @@ class App:
         self.config["accounts"].append(account)
         log.info("account added: %s", account_label(account))
 
-    def save_caldav_account(self, account, url, username, password):
+    def save_caldav_account(self, account, provider, url, username, password):
         if account is None:
-            self.add_account({"type": "caldav", "url": url, "username": username, "calendars": None}, password)
+            new = {"type": "caldav", "provider": provider["key"], "url": url, "username": username, "calendars": None}
+            self.add_account(new, password)
         else:
             if (url, username) != (account["url"], account["username"]):
                 # Another account: its calendars have to be chosen again.
@@ -793,9 +832,9 @@ class App:
             set_secret(account, password)
         self.save_config()
 
-    def save_ics_account(self, account, name, url):
+    def save_ics_account(self, account, provider, name, url):
         if account is None:
-            self.add_account({"type": "ics", "name": name}, url)
+            self.add_account({"type": "ics", "provider": provider["key"], "name": name}, url)
         else:
             account["name"] = name
             set_secret(account, url)
@@ -828,21 +867,14 @@ class App:
             self.dialogs["accounts"].refresh()
         self.refresh_tray()
 
-    def edit_account(self, account, kind, message=None):
-        if kind == "caldav":
-            message = message or (
-                "Identifiant de synchronisation et mot de passe d'application du compte. Infomaniak : les "
-                "deux se trouvent sur config.infomaniak.com (« Mes Contacts & Agendas » → « Synchronisation "
-                "manuelle »)."
-            )
-            self.open("caldav", lambda: CaldavDialog(self, account, message))
-        else:
-            message = message or (
-                "Colle l'adresse secrète de l'agenda. Google Agenda : Paramètres → ton agenda → "
-                "« Intégrer l'agenda » → « Adresse secrète au format iCal ». Elle donne accès en "
-                "lecture à l'agenda : ne la partage pas."
-            )
-            self.open("ics", lambda: IcsDialog(self, account, message))
+    def edit_account(self, account, provider=None, problem=None):
+        """Opens the window of a new account of this provider, or of an existing account."""
+        provider = provider or provider_of(account)
+        message = t(f"help_{provider['key']}")
+        if problem:
+            message = f"{problem}\n\n{message}"
+        dialog = CaldavDialog if provider["kind"] == "caldav" else IcsDialog
+        self.open(provider["kind"], lambda: dialog(self, account, provider, message))
 
     def ask_calendars(self, account_id):
         account = self.account(account_id)
@@ -853,15 +885,15 @@ class App:
         """Why the alarms of this account cannot be trusted right now, or None."""
         account_id = account["id"]
         if account_id in self.sync_errors:
-            return f"En échec : {self.sync_errors[account_id]}"[:90]
+            return t("failing", error=self.sync_errors[account_id])[:90]
         if account["type"] == "caldav" and account["calendars"] is None:
-            return "Aucun agenda choisi"
+            return t("none_chosen")
         if account_id not in self.last_sync:
-            return "En attente de synchronisation"
+            return t("waiting")
         return None
 
     def account_status(self, account):
-        return self.account_problem(account) or f"Synchronisé à {self.last_sync[account['id']]:%H:%M:%S}"
+        return self.account_problem(account) or t("synced_at", time=f"{self.last_sync[account['id']]:%H:%M:%S}")
 
     # --- fetcher callbacks ----------------------------------------------
 
@@ -908,15 +940,9 @@ class App:
         account = self.account(account_id)
         if account is None:
             return
-        self.sync_errors[account_id] = "refusé par le serveur"
+        self.sync_errors[account_id] = t("refused_short")
         self.refresh_accounts()
-        what = "l'adresse iCal enregistrée" if account["type"] == "ics" else "le mot de passe enregistré"
-        self.edit_account(
-            account,
-            account["type"],
-            f"{account_label(account)} : le serveur refuse {what} (révoqué ou expiré). "
-            "Ses alarmes sont suspendues tant qu'il n'est pas remplacé.",
-        )
+        self.edit_account(account, problem=t(f"refused_{account['type']}", name=account_label(account)))
 
     # --- alarms ---------------------------------------------------------
 
@@ -977,7 +1003,8 @@ class App:
     def test_alarm(self):
         now = datetime.now().astimezone()
         start = now + timedelta(minutes=self.config["lead_minutes"])
-        self.ring(Event(f"{TEST_PREFIX}{now.isoformat()}", start, start + timedelta(hours=1), "Test de l'alarme", "", "Test"))
+        key = f"{TEST_PREFIX}{now.isoformat()}"
+        self.ring(Event(key, start, start + timedelta(hours=1), t("test_event"), "", t("test_calendar")))
 
     def set_sound(self, playing):
         if playing == self.sound_playing:
@@ -1014,19 +1041,19 @@ class App:
     def status_text(self):
         accounts = self.config["accounts"]
         if not accounts:
-            return "Non configuré"
+            return t("not_configured")
         for account in accounts:
             problem = self.account_problem(account)
             if problem:
-                return f"{account_label(account)} : {problem}"[:120]
-        return f"Dernière synchro : {min(self.last_sync[account['id']] for account in accounts):%H:%M:%S}"
+                return t("account_state", name=account_label(account), state=problem)[:120]
+        return t("last_sync", time=f"{min(self.last_sync[account['id']] for account in accounts):%H:%M:%S}")
 
     def next_text(self):
         now = datetime.now().astimezone()
         upcoming = sorted((event for event in self.events.values() if event.start > now), key=lambda event: event.start)
         if not upcoming:
-            return "Aucun rendez-vous dans les 24 h"
-        return f"Prochain : {upcoming[0].start:%H:%M} {upcoming[0].summary}"[:80]
+            return t("no_upcoming")
+        return t("next_event", time=f"{upcoming[0].start:%H:%M}", title=upcoming[0].summary)[:80]
 
     def refresh_tray(self):
         self.tray.title = f"Calendar Alarm — {self.status_text()}"[:120]
@@ -1040,9 +1067,9 @@ class App:
         self.tray.icon = self.icons[healthy]
         self.refresh_tray()
         if was_healthy and not healthy:
-            names = ", ".join(account_label(account) for account in self.stale_accounts()) or "aucun compte"
+            names = ", ".join(account_label(account) for account in self.stale_accounts())
             log.warning("no successful sync recently: %s", names)
-            self.tray.notify(f"Agenda non synchronisé ({names}) : les alarmes ne sont plus fiables."[:250], "Calendar Alarm")
+            self.tray.notify(t("stale_notification", names=names)[:250], "Calendar Alarm")
 
 
 def setup_logging():
