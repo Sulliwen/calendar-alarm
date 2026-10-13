@@ -73,7 +73,7 @@ STRINGS = {
             "donne accès en lecture à l'agenda : ne la partagez pas."
         ),
         # Settings windows
-        "title_accounts": "Synchronisation agendas",
+        "title_accounts": "Agendas synchronisés",
         "title_calendars": "Agendas surveillés",
         "accounts_intro": "Ajoutez des agendas à synchroniser",
         "no_account": "Aucun agenda pour l'instant.",
@@ -169,7 +169,7 @@ STRINGS = {
         "next_event": "Prochain : {time} {title}",
         "sync_now": "Synchroniser maintenant",
         "test_alarm": "Tester l'alarme",
-        "menu_accounts": "Synchronisation agendas…",
+        "menu_accounts": "Agendas synchronisés…",
         "menu_settings": "Paramètres…",
         "open_log": "Ouvrir le journal",
         "quit": "Quitter",
@@ -227,7 +227,7 @@ STRINGS = {
             "gives read access to the calendar: do not share it."
         ),
         # Settings windows
-        "title_accounts": "Calendar sync",
+        "title_accounts": "Synced calendars",
         "title_calendars": "Watched calendars",
         "accounts_intro": "Add calendars to sync",
         "no_account": "No calendar yet.",
@@ -323,7 +323,7 @@ STRINGS = {
         "next_event": "Next: {time} {title}",
         "sync_now": "Sync now",
         "test_alarm": "Test the alarm",
-        "menu_accounts": "Calendar sync…",
+        "menu_accounts": "Synced calendars…",
         "menu_settings": "Settings…",
         "open_log": "Open the log",
         "quit": "Quit",

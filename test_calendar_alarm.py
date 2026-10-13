@@ -407,7 +407,7 @@ class AppTest(unittest.TestCase):
         self.assertFalse(self.app.dialogs)
         self.app.show_accounts()
         self.app.root.update()
-        self.assertIn("Calendar sync", self.app.dialogs["accounts"].title())
+        self.assertIn("Synced calendars", self.app.dialogs["accounts"].title())
 
     # --- settings
 

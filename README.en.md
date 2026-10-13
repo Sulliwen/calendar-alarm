@@ -16,7 +16,7 @@ rings as soon as it is found.
 1. Run `CalendarAlarm-Setup-<version>.exe` (no administrator rights needed).
    The file is not signed, so Windows shows a SmartScreen warning: “More
    info” → “Run anyway”.
-2. When the installation ends, the **“Calendar sync”** window opens.
+2. When the installation ends, the **“Synced calendars”** window opens.
    Pick your provider in the drop-down list, click “Add…” and follow the
    instructions shown. Repeat for every calendar to watch.
 

@@ -16,7 +16,7 @@ minute sonne dès qu'il est découvert.
 1. Lancez `CalendarAlarm-Setup-<version>.exe` (aucun droit administrateur
    requis). Le fichier n'étant pas signé, Windows affiche un avertissement
    SmartScreen : « Informations complémentaires » → « Exécuter quand même ».
-2. À la fin de l'installation, la fenêtre **« Synchronisation agendas »**
+2. À la fin de l'installation, la fenêtre **« Agendas synchronisés »**
    s'ouvre.
    Choisissez votre fournisseur dans la liste déroulante, cliquez sur
    « Ajouter… » et suivez les indications affichées. Recommencez pour chaque

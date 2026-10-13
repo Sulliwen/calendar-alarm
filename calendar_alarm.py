@@ -494,7 +494,7 @@ def button(parent, text, command, kind="secondary", **options):
             font=(FONT, 9), padx=4, pady=0,
         ),
     }
-    return tk.Button(parent, text=text, command=command, relief="flat", bd=0, cursor="hand2", **styles[kind], **options)
+    return tk.Button(parent, text=text, command=command, relief="flat", bd=0, cursor="hand2", **{**styles[kind], **options})
 
 
 class Dialog(tk.Toplevel):
@@ -679,7 +679,14 @@ class AccountsDialog(Dialog):
         self.provider = ttk.Combobox(add, state="readonly", values=names, width=30, font=(FONT, 10))
         self.provider.current(0)
         self.provider.pack(side="left", padx=(0, 8))
-        button(add, t("add"), self.add, "primary").pack(side="left")
+        # A label acting as a button: a real one cannot be made as low as the drop-down list beside it.
+        add_button = tk.Label(
+            add, text=t("add"), font=(FONT, 10, "bold"), bg=COLOR_ACCENT, fg="white", padx=14, pady=0,
+            cursor="hand2", takefocus=1,
+        )
+        add_button.pack(side="left", fill="y")
+        for trigger in ("<Button-1>", "<Return>", "<space>"):
+            add_button.bind(trigger, lambda _: self.add())
         button(self.footer, t("close"), self.close).pack(side="right")
         self.refresh()
 
