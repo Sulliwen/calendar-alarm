@@ -307,6 +307,13 @@ class AppTest(unittest.TestCase):
         self.assertFalse(self.app.events)
         self.keyring.delete_password.assert_called_once_with(f"calendar-alarm:{added['id']}", "secret")
 
+    def test_first_launch_opens_the_accounts_window(self):
+        self.app.config["accounts"] = []
+        self.app.root.mainloop = mock.Mock()
+        with mock.patch("calendar_alarm.autostart_command", return_value=calendar_alarm.launch_command()):
+            self.app.run()
+        self.assertIsInstance(self.app.dialogs["accounts"], calendar_alarm.AccountsDialog)
+
     # --- health
 
     def test_health_turns_red_as_soon_as_one_account_goes_stale(self):

@@ -1,6 +1,6 @@
 ; Per-user installer: no administrator rights needed.
 #define AppName "Calendar Alarm"
-#define AppVersion "1.1.0"
+#define AppVersion "1.1.1"
 #define AppExe "CalendarAlarm.exe"
 
 [Setup]

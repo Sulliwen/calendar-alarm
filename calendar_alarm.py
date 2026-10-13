@@ -40,7 +40,7 @@ import keyring.errors
 import pystray
 import recurring_ical_events
 from caldav.lib.error import AuthorizationError
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 
 APP = "calendar-alarm"
 DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / APP
@@ -562,6 +562,10 @@ class CalendarsDialog(Dialog):
 class AccountsDialog(Dialog):
     def __init__(self, app):
         super().__init__(app, "accounts", "comptes et agendas")
+        self.text(
+            "Ajoute ici tous tes agendas : chaque rendez-vous sonnera "
+            f"{app.config['lead_minutes']} minutes avant son début."
+        )
         self.rows = tk.Frame(self.frame)
         self.rows.pack(anchor="w", fill="x")
         add = tk.Frame(self.frame)
@@ -581,9 +585,7 @@ class AccountsDialog(Dialog):
             child.destroy()
         accounts = self.app.config["accounts"]
         if not accounts:
-            tk.Label(self.rows, text="Aucun compte : aucune alarme ne sonnera.", font=(FONT, 10), fg=COLOR_ERROR).pack(
-                anchor="w"
-            )
+            tk.Label(self.rows, text="Aucun agenda pour l'instant.", font=(FONT, 10), fg=COLOR_ERROR).pack(anchor="w")
         for account in accounts:
             row = tk.Frame(self.rows)
             row.pack(anchor="w", fill="x", pady=4)
@@ -705,6 +707,9 @@ class App:
         self.root = tk.Tk()
         self.root.withdraw()
         self.icons = {True: make_icon(COLOR_OK), False: make_icon(COLOR_ERROR)}
+        # Kept on self: Tk only holds a weak reference to the picture of its windows.
+        self.window_icon = ImageTk.PhotoImage(self.icons[True].resize((64, 64)))
+        self.root.iconphoto(True, self.window_icon)
         self.tray = pystray.Icon(APP, self.icons[False], "Calendar Alarm", self.build_menu())
         self.fetcher = Fetcher(self)
 
@@ -743,13 +748,7 @@ class App:
         self.tray.run_detached()
         self.fetcher.start()
         if not self.config["accounts"]:
-            self.edit_account(
-                None,
-                "caldav",
-                "Premier lancement : saisis l'identifiant de synchronisation de ton agenda et un mot de "
-                "passe d'application. Pour Infomaniak, les deux se trouvent sur config.infomaniak.com. "
-                "D'autres agendas (Google…) s'ajoutent ensuite par un clic droit sur l'icône.",
-            )
+            self.show_accounts()
         self.root.after(TICK_MS, self.tick)
         self.root.mainloop()
 
@@ -831,7 +830,11 @@ class App:
 
     def edit_account(self, account, kind, message=None):
         if kind == "caldav":
-            message = message or "Identifiant de synchronisation et mot de passe d'application du compte."
+            message = message or (
+                "Identifiant de synchronisation et mot de passe d'application du compte. Infomaniak : les "
+                "deux se trouvent sur config.infomaniak.com (« Mes Contacts & Agendas » → « Synchronisation "
+                "manuelle »)."
+            )
             self.open("caldav", lambda: CaldavDialog(self, account, message))
         else:
             message = message or (
