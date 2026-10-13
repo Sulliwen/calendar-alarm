@@ -383,9 +383,36 @@ class AppTest(unittest.TestCase):
 
         self.app.last_sync["g"] = self.now - timedelta(minutes=10)
         self.tick()
+        self.tick()
         self.assertFalse(self.app.healthy)
         self.app.tray.notify.assert_called_once()
         self.assertIn("Google", self.app.tray.notify.call_args.args[0])
+
+    def test_a_calendar_just_added_is_not_reported_as_broken(self):
+        self.app.on_events("a", [])
+        self.tick()
+        self.app.save_ics_account(None, PROVIDER["google"], "Google", "https://calendar.test/basic.ics")
+        added = self.app.config["accounts"][1]
+        self.tick()
+        # Red until its first sync, but no warning yet.
+        self.assertFalse(self.app.healthy)
+        self.app.tray.notify.assert_not_called()
+        self.app.on_events(added["id"], [])
+        self.tick()
+        self.assertTrue(self.app.healthy)
+
+        # It only becomes a warning when the first sync never comes.
+        del self.app.last_sync[added["id"]]
+        self.app.watched_since[added["id"]] = self.now - timedelta(minutes=10)
+        self.tick()
+        self.app.tray.notify.assert_called_once()
+
+    def test_no_sync_since_startup_ends_up_reported(self):
+        self.tick()
+        self.app.tray.notify.assert_not_called()
+        self.app.started = self.now - timedelta(minutes=10)
+        self.tick()
+        self.app.tray.notify.assert_called_once()
 
 
 if __name__ == "__main__":

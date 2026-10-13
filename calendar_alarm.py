@@ -720,6 +720,10 @@ class App:
         self.calendar_names = {}
         self.owner_names = {}
         self.healthy = None
+        # When each account started being watched (program start, or the moment it was added).
+        self.started = datetime.now().astimezone()
+        self.watched_since = {}
+        self.warned = False
         self.sound_playing = False
         self.last_tick = time.time()
 
@@ -816,6 +820,7 @@ class App:
     def add_account(self, account, secret):
         account["id"] = uuid.uuid4().hex[:8]
         set_secret(account, secret)
+        self.watched_since[account["id"]] = datetime.now().astimezone()
         self.config["accounts"].append(account)
         log.info("account added: %s", account_label(account))
 
@@ -849,7 +854,14 @@ class App:
     def remove_account(self, account):
         self.config["accounts"].remove(account)
         delete_secret(account)
-        for per_account in (self.account_events, self.last_sync, self.sync_errors, self.calendar_names, self.owner_names):
+        for per_account in (
+            self.account_events,
+            self.last_sync,
+            self.sync_errors,
+            self.calendar_names,
+            self.owner_names,
+            self.watched_since,
+        ):
             per_account.pop(account["id"], None)
         log.info("account removed: %s", account_label(account))
         self.merge_events()
@@ -1024,16 +1036,22 @@ class App:
 
     # --- tray -----------------------------------------------------------
 
-    def stale_accounts(self):
-        """Accounts without a recent successful sync."""
+    def stale_accounts(self, since_watched=False):
+        """Accounts without a recent successful sync.
+
+        since_watched leaves an account that never synced the same delay, counted from the moment it
+        started being watched: a calendar added two seconds ago is not a broken one.
+        """
         now = datetime.now().astimezone()
-        stale_after = max(3 * self.config["poll_seconds"], 300)
-        return [
-            account
-            for account in self.config["accounts"]
-            if account["id"] not in self.last_sync
-            or (now - self.last_sync[account["id"]]).total_seconds() >= stale_after
-        ]
+        stale_after = timedelta(seconds=max(3 * self.config["poll_seconds"], 300))
+        stale = []
+        for account in self.config["accounts"]:
+            reference = self.last_sync.get(account["id"])
+            if reference is None and since_watched:
+                reference = self.watched_since.get(account["id"], self.started)
+            if reference is None or now - reference >= stale_after:
+                stale.append(account)
+        return stale
 
     def is_healthy(self):
         return bool(self.config["accounts"]) and not self.stale_accounts()
@@ -1061,15 +1079,17 @@ class App:
 
     def refresh_health(self):
         healthy = self.is_healthy()
-        if healthy == self.healthy:
-            return
-        was_healthy, self.healthy = self.healthy, healthy
-        self.tray.icon = self.icons[healthy]
-        self.refresh_tray()
-        if was_healthy and not healthy:
-            names = ", ".join(account_label(account) for account in self.stale_accounts())
+        if healthy != self.healthy:
+            self.healthy = healthy
+            self.tray.icon = self.icons[healthy]
+            self.refresh_tray()
+        # The icon turns red at once; the notification waits until an account is really overdue.
+        overdue = self.stale_accounts(since_watched=True)
+        if overdue and not self.warned:
+            names = ", ".join(account_label(account) for account in overdue)
             log.warning("no successful sync recently: %s", names)
             self.tray.notify(t("stale_notification", names=names)[:250], "Calendar Alarm")
+        self.warned = bool(overdue)
 
 
 def setup_logging():
