@@ -150,6 +150,11 @@ class AgendaDaysTest(unittest.TestCase):
         )
 
 
+class VersionTest(unittest.TestCase):
+    def test_version_is_major_minor_patch(self):
+        self.assertRegex(calendar_alarm.__version__, r"^\d+\.\d+\.\d+$")
+
+
 class IcsUrlTest(unittest.TestCase):
     def test_only_https_feeds_are_accepted(self):
         normalize = calendar_alarm.normalize_ics_url
@@ -415,6 +420,7 @@ class AppTest(unittest.TestCase):
         self.app.show_settings()
         self.app.root.update()
         dialog = self.app.dialogs["settings"]
+        self.assertIn(f"Calendar Alarm {calendar_alarm.__version__}", self.labels(dialog.footer))
         self.assertIn("Alarm 01", dialog.sound.cget("values"))
         self.assertEqual(dialog.sound.get(), "Alarm 01")
         dialog.lead = lambda: 15

@@ -46,6 +46,10 @@ from PIL import Image, ImageDraw, ImageTk
 import texts
 from texts import PROVIDERS, t
 
+# MAJOR.MINOR.PATCH (semver.org): PATCH for a fix, MINOR for a new feature, MAJOR when an update
+# cannot keep the user's settings. The installer and the settings window read it from here.
+__version__ = "1.0.0"
+
 APP = "calendar-alarm"
 DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / APP
 CONFIG_PATH = DATA_DIR / "config.json"
@@ -170,7 +174,7 @@ def delete_secret(account):
 def load_config():
     stored = load_json(CONFIG_PATH, {})
     if "username" in stored:
-        # Version 1.0 knew a single Infomaniak account, kept at the top level.
+        # Builds made before the first release knew a single Infomaniak account, kept at the top level.
         username = stored.pop("username")
         account = {
             "id": uuid.uuid4().hex[:8],
@@ -766,6 +770,7 @@ class SettingsDialog(Dialog):
         self.poll = self.choice(t("poll_label"), polls, polls[poll])
         self.autostart = self.checkbox(t("autostart"), autostart_command() is not None)
 
+        self.label(self.footer, f"Calendar Alarm {__version__}", font=(FONT, 9), fg=COLOR_MUTED).pack(side="left")
         button(self.footer, t("cancel"), self.close).pack(side="right")
         button(self.footer, t("save"), self.submit, "primary").pack(side="right", padx=(0, 8))
 
@@ -1551,7 +1556,7 @@ def main():
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except (AttributeError, OSError):
         pass
-    log.info("starting")
+    log.info("starting %s", __version__)
     app = App()
     app.root.report_callback_exception = lambda *exc_info: log.error("Tk callback failed", exc_info=exc_info)
     app.run()

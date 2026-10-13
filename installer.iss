@@ -1,12 +1,16 @@
 ; Per-user installer: no administrator rights needed.
 #define AppName "Calendar Alarm"
-#define AppVersion "1.4.1"
+; The version comes from calendar_alarm.py: build.ps1 passes it with /DAppVersion.
+#ifndef AppVersion
+  #define AppVersion "0.0.0"
+#endif
 #define AppExe "CalendarAlarm.exe"
 
 [Setup]
 AppId={{6F0B8C2E-4D1A-4B7E-9C35-CA1E0DA7A1A2}
 AppName={#AppName}
 AppVersion={#AppVersion}
+VersionInfoVersion={#AppVersion}
 AppPublisher=Sullivan Bitho
 DefaultDirName={localappdata}\Programs\CalendarAlarm
 DisableProgramGroupPage=yes

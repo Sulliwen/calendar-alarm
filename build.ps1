@@ -18,7 +18,8 @@ Set-Location $dir
 $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") |
     Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $iscc) { throw 'Inno Setup 6 not found.' }
-& $iscc /Q (Join-Path $dir 'installer.iss')
+$version = & $python -c "import calendar_alarm; print(calendar_alarm.__version__)"
+& $iscc /Q "/DAppVersion=$version" (Join-Path $dir 'installer.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed.' }
 
 Get-ChildItem (Join-Path $dir 'dist\CalendarAlarm-Setup-*.exe') | ForEach-Object {
