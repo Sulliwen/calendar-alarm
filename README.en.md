@@ -20,8 +20,10 @@ rings as soon as it is found.
    Pick your provider in the drop-down list, click “Add…” and follow the
    instructions shown. Repeat for every calendar to watch.
 
-The program registers itself to start with Windows. Everything else goes
-through a **right-click** on the icon in the notification area: test the alarm,
+The program registers itself to start with Windows. A **click** on the icon in
+the notification area opens the **Agenda**: every appointment of the next
+7 days, from all calendars, grouped by day. Everything else goes through a
+**right-click** on that icon: test the alarm,
 manage accounts and calendars, change the language (French or English), turn
 off starting with Windows, quit.
 
@@ -55,7 +57,8 @@ only once.
   “Snooze”, not “Stop”.
 - An appointment found less than 10 minutes ahead, or started less than
   5 minutes ago (waking from sleep), rings immediately.
-- Ignored: all-day events, cancelled appointments and declined invitations.
+- These do not ring: all-day events (shown in the Agenda), cancelled
+  appointments and declined invitations.
 - Green icon: every account is syncing. Red icon and a notification: an account
   has had no successful sync for 5 minutes, its alarms can no longer be
   trusted.

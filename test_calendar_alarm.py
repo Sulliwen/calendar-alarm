@@ -77,8 +77,15 @@ class ExtractEventsTest(unittest.TestCase):
     def setUp(self):
         self.events = {e.key.split("|")[0]: e for e in extract_events(components(), "Perso", {"me@example.com"})}
 
-    def test_keeps_only_timed_live_undeclined_events(self):
-        self.assertEqual(set(self.events), {"timed", "accepted", "weekly"})
+    def test_keeps_only_live_undeclined_events(self):
+        self.assertEqual(set(self.events), {"timed", "accepted", "weekly", "allday"})
+
+    def test_all_day_event_runs_from_local_midnight_to_midnight(self):
+        allday = self.events["allday"]
+        self.assertTrue(allday.all_day)
+        self.assertFalse(self.events["timed"].all_day)
+        self.assertEqual((allday.start.date().isoformat(), allday.start.hour), ("2026-10-13", 0))
+        self.assertEqual(allday.end - allday.start, timedelta(days=1))
 
     def test_reads_fields_and_converts_to_local_time(self):
         timed = self.events["timed"]
@@ -111,6 +118,30 @@ class DueEventsTest(unittest.TestCase):
 
     def test_handled_events_do_not_ring_again(self):
         self.assertFalse(self.due(5, handled=["e"]))
+
+    def test_all_day_events_never_ring(self):
+        start = self.now + timedelta(minutes=5)
+        allday = Event("e", start, start + timedelta(days=1), "e", "", "cal", all_day=True)
+        self.assertFalse(due_events([allday], set(), self.now, self.lead, self.grace))
+
+
+class AgendaDaysTest(unittest.TestCase):
+    def test_events_are_grouped_by_day_with_all_day_ones_first(self):
+        monday = datetime(2026, 10, 12).astimezone()
+        late = event("late", monday.replace(hour=16))
+        early = event("early", monday.replace(hour=9))
+        wednesday = event("wednesday", monday.replace(hour=10) + timedelta(days=2))
+        trip = Event("trip", monday, monday + timedelta(days=2), "trip", "", "cal", all_day=True)
+        outside = event("outside", monday + timedelta(days=3))
+        agenda = calendar_alarm.agenda_days([late, wednesday, trip, early, outside], monday.date(), 3)
+        self.assertEqual(
+            [(day.isoformat(), [e.key for e in events]) for day, events in agenda],
+            [
+                ("2026-10-12", ["trip", "early", "late"]),
+                ("2026-10-13", ["trip"]),
+                ("2026-10-14", ["wednesday"]),
+            ],
+        )
 
 
 class IcsUrlTest(unittest.TestCase):
@@ -261,6 +292,9 @@ class AppTest(unittest.TestCase):
         found = [mock.Mock(icalendar_instance=icalendar.Calendar.from_ical(ICS))]
         events, calendars = self.fetch_caldav(found)
         self.assertEqual({e.calendar for e in events}, {"url/mine"})
+        # Read from the start of today up to seven days ahead, for the agenda window.
+        window = calendars["url/mine"][0].search.call_args.kwargs
+        self.assertEqual((window["start"].hour, (window["end"] - window["start"]).days), (0, 7))
         calendars["url/colleague"][0].search.assert_not_called()
 
     def test_calendars_must_be_chosen_first_and_still_exist(self):
@@ -280,7 +314,7 @@ class AppTest(unittest.TestCase):
         by_uid = {}
         for e in events:
             by_uid.setdefault(e.key.split("|")[0], []).append(e)
-        self.assertEqual(set(by_uid), {"timed", "accepted", "weekly"})
+        self.assertEqual(set(by_uid), {"timed", "accepted", "weekly", "allday"})
         self.assertEqual(
             [e.start for e in by_uid["weekly"]], [datetime(2026, 10, 13, 9, 0, tzinfo=timezone.utc)]
         )
@@ -368,6 +402,48 @@ class AppTest(unittest.TestCase):
         self.app.show_accounts()
         self.app.root.update()
         self.assertIn("accounts and calendars", self.app.dialogs["accounts"].title())
+
+    # --- agenda
+
+    def labels(self, widget):
+        found = [widget.cget("text")] if isinstance(widget, calendar_alarm.tk.Label) else []
+        for child in widget.winfo_children():
+            found.extend(self.labels(child))
+        return found
+
+    def test_agenda_lists_every_calendar_by_day_in_the_chosen_language(self):
+        self.app.config["accounts"].append(self.feed)
+        self.app.on_discovery("a", {"url/mine": "Perso"}, "Me")
+        noon = self.now.replace(hour=12, minute=0, second=0, microsecond=0)
+        self.app.on_events("a", [Event("work", noon, noon + timedelta(hours=1), "Point projet", "Salle 2", "Perso")])
+        holiday = noon.replace(hour=0) + timedelta(days=1)
+        self.app.on_events("g", [Event("off", holiday, holiday + timedelta(days=1), "Férié", "", "Google", all_day=True)])
+        self.assertEqual(self.app.watched_calendars(), ["Perso", "Google"])
+
+        self.app.show_agenda()
+        self.app.show_agenda()
+        self.app.root.update()
+        window = self.app.dialogs["agenda"]
+        shown = self.labels(window.days)
+        self.assertEqual(sum(text.startswith(("Aujourd'hui", "Demain")) for text in shown), 2)
+        self.assertEqual(shown.count("Rien de prévu"), calendar_alarm.AGENDA_DAYS - 2)
+        for expected in ("Point projet", "Salle 2  ·  Perso", "Férié", "Journée", "12:00", "13:00"):
+            self.assertIn(expected, shown)
+        self.assertEqual(self.labels(window.legend), ["Perso", "Google"])
+
+        # A sync redraws the open window.
+        self.app.on_events("a", [])
+        self.assertNotIn("Point projet", self.labels(window.days))
+        self.app.set_language("en")
+        self.addCleanup(texts.set_language, "fr")
+        self.assertNotIn("agenda", self.app.dialogs)
+        self.app.show_agenda()
+        self.assertIn("All day", self.labels(self.app.dialogs["agenda"].days))
+
+    def test_agenda_without_any_account_offers_to_add_one(self):
+        self.app.config["accounts"] = []
+        self.app.show_agenda()
+        self.assertEqual(self.labels(self.app.dialogs["agenda"].days), ["Ajoutez un agenda pour voir vos rendez-vous ici."])
 
     # --- health
 

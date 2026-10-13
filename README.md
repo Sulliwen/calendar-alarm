@@ -21,8 +21,10 @@ minute sonne dès qu'il est découvert.
    « Ajouter… » et suivez les indications affichées. Recommencez pour chaque
    agenda à surveiller.
 
-Le programme s'inscrit lui-même au démarrage de Windows. Tout le reste passe
-par un **clic droit** sur l'icône de la zone de notification : tester l'alarme,
+Le programme s'inscrit lui-même au démarrage de Windows. Un **clic** sur
+l'icône de la zone de notification ouvre l'**Agenda** : tous les rendez-vous
+des 7 prochains jours, tous agendas confondus, regroupés par jour. Tout le
+reste passe par un **clic droit** sur cette icône : tester l'alarme,
 gérer les comptes et les agendas, changer de langue (français ou anglais),
 désactiver le lancement au démarrage, quitter.
 
@@ -56,8 +58,8 @@ sonne qu'une fois.
   « Rappel », pas « Arrêter ».
 - Un rendez-vous découvert à moins de 10 minutes, ou commencé depuis moins de
   5 minutes (sortie de veille), sonne immédiatement.
-- Sont ignorés : les événements « toute la journée », les rendez-vous annulés
-  et les invitations refusées.
+- Ne sonnent pas : les événements « toute la journée » (affichés dans
+  l'Agenda), les rendez-vous annulés et les invitations refusées.
 - Icône verte : tous les comptes se synchronisent. Icône rouge et
   notification : un compte n'a plus de synchronisation réussie depuis
   5 minutes, ses alarmes ne sont plus fiables.

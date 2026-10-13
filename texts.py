@@ -127,7 +127,19 @@ STRINGS = {
         "untitled": "(sans titre)",
         "test_event": "Test de l'alarme",
         "test_calendar": "Test",
+        # Agenda
+        "agenda_title": "Agenda",
+        "agenda_subtitle": "Les {days} prochains jours",
+        "today": "Aujourd'hui",
+        "tomorrow": "Demain",
+        "nothing_planned": "Rien de prévu",
+        "all_day": "Journée",
+        "ongoing": "en cours",
+        "in_min": "dans {minutes} min",
+        "in_hours": "dans {hours} h",
+        "agenda_no_account": "Ajoutez un agenda pour voir vos rendez-vous ici.",
         # Tray
+        "menu_agenda": "Agenda",
         "not_configured": "Aucun agenda configuré",
         "account_state": "{name} : {state}",
         "last_sync": "Dernière synchro : {time}",
@@ -248,7 +260,19 @@ STRINGS = {
         "untitled": "(no title)",
         "test_event": "Alarm test",
         "test_calendar": "Test",
+        # Agenda
+        "agenda_title": "Agenda",
+        "agenda_subtitle": "The next {days} days",
+        "today": "Today",
+        "tomorrow": "Tomorrow",
+        "nothing_planned": "Nothing planned",
+        "all_day": "All day",
+        "ongoing": "now",
+        "in_min": "in {minutes} min",
+        "in_hours": "in {hours} h",
+        "agenda_no_account": "Add a calendar to see your appointments here.",
         # Tray
+        "menu_agenda": "Agenda",
         "not_configured": "No calendar configured",
         "account_state": "{name}: {state}",
         "last_sync": "Last sync: {time}",
@@ -262,6 +286,26 @@ STRINGS = {
         "open_log": "Open the log",
         "quit": "Quit",
         "stale_notification": "Calendar not synced ({names}): the alarms can no longer be trusted.",
+    },
+}
+
+# Written out here: the day names of the system follow its regional format, not the chosen language.
+DATES = {
+    "fr": {
+        "days": ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"],
+        "months": [
+            "janvier", "février", "mars", "avril", "mai", "juin",
+            "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+        ],
+        "format": "{day} {number} {month}",
+    },
+    "en": {
+        "days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+        "months": [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December",
+        ],
+        "format": "{day}, {month} {number}",
     },
 }
 
@@ -288,3 +332,9 @@ def language():
 
 def t(key, **values):
     return STRINGS[_language][key].format(**values)
+
+
+def day_name(date):
+    """"mardi 13 octobre" or "Tuesday, October 13"."""
+    dates = DATES[_language]
+    return dates["format"].format(day=dates["days"][date.weekday()], number=date.day, month=dates["months"][date.month - 1])

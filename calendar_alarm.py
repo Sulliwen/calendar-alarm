@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 import types
 import urllib.error
 import urllib.request
@@ -27,7 +28,7 @@ import uuid
 import winreg
 import winsound
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, time as clock, timedelta
 from functools import partial
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -69,7 +70,8 @@ DEFAULT_CONFIG = {
     "my_emails": [],
 }
 
-HORIZON = timedelta(hours=24)
+# Days read ahead, today included: the alarms need the next minutes, the agenda window the rest.
+AGENDA_DAYS = 7
 RETRY_SECONDS = 15
 TICK_MS = 500
 REDISCOVER_SECONDS = 1800
@@ -79,6 +81,13 @@ RUN_NAME = "CalendarAlarm"
 COLOR_OK = "#2e7d32"
 COLOR_ERROR = "#c62828"
 FONT = "Segoe UI"
+COLOR_TEXT = "#202124"
+COLOR_MUTED = "#80868b"
+COLOR_ACCENT = "#1a73e8"
+COLOR_HIGHLIGHT = "#e8f0fe"
+COLOR_LINE = "#e3e5e8"
+# One colour per watched calendar, in the order they were added.
+CALENDAR_COLORS = ["#1a73e8", "#e67c00", "#0b8043", "#8e24aa", "#d93025", "#00897b", "#c2185b", "#5f6368"]
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 log = logging.getLogger(APP)
@@ -92,6 +101,8 @@ class Event:
     summary: str
     location: str
     calendar: str
+    # All-day events are shown in the agenda but never ring.
+    all_day: bool = False
 
 
 class Refused(Exception):
@@ -227,26 +238,30 @@ def is_declined(component, my_addresses):
 
 
 def extract_events(components, calendar_name, my_addresses):
-    """Timed, non-cancelled, non-declined events among (already expanded) VEVENT components."""
+    """Non-cancelled, non-declined events among (already expanded) VEVENT components."""
+
+    def local(value):
+        # An all-day event carries a date: it runs from midnight to midnight, local time.
+        # astimezone() reads a naive (floating) datetime as local time.
+        return (value if isinstance(value, datetime) else datetime.combine(value, clock.min)).astimezone()
+
     events = []
     for component in components:
         dtstart = component.get("DTSTART")
-        # All-day events carry a date, not a datetime.
-        if dtstart is None or not isinstance(dtstart.dt, datetime):
+        if dtstart is None:
             continue
         if str(component.get("STATUS", "")).upper() == "CANCELLED":
             continue
         if is_declined(component, my_addresses):
             continue
-        # astimezone() reads a naive (floating) datetime as local time.
-        start = dtstart.dt.astimezone()
-        dtend = component.get("DTEND")
-        if dtend is not None and isinstance(dtend.dt, datetime):
-            end = dtend.dt.astimezone()
+        all_day = not isinstance(dtstart.dt, datetime)
+        start = local(dtstart.dt)
+        if component.get("DTEND") is not None:
+            end = local(component.get("DTEND").dt)
         elif component.get("DURATION") is not None:
             end = start + component.get("DURATION").dt
         else:
-            end = start
+            end = start + timedelta(days=1) if all_day else start
         events.append(
             Event(
                 # No account in the key: a meeting present in two calendars rings once.
@@ -256,18 +271,36 @@ def extract_events(components, calendar_name, my_addresses):
                 summary=str(component.get("SUMMARY") or t("untitled")),
                 location=str(component.get("LOCATION") or ""),
                 calendar=calendar_name,
+                all_day=all_day,
             )
         )
     return events
 
 
 def due_events(events, handled, now, lead, grace):
-    """Events whose alarm window is open and that were neither stopped, snoozed nor ringing."""
+    """Timed events whose alarm window is open and that were neither stopped, snoozed nor ringing."""
     return [
         event
         for event in events
-        if event.key not in handled and event.start - lead <= now < event.start + grace
+        if not event.all_day and event.key not in handled and event.start - lead <= now < event.start + grace
     ]
+
+
+def agenda_days(events, today, days):
+    """[(date, its events)] for the given number of days: all-day events first, then by start time."""
+    agenda = []
+    for offset in range(days):
+        day = today + timedelta(days=offset)
+        on_that_day = [
+            event
+            for event in events
+            # An all-day event ends at the midnight that follows its last day.
+            if event.start.date() <= day
+            and day <= ((event.end - timedelta(seconds=1)).date() if event.all_day else event.start.date())
+        ]
+        on_that_day.sort(key=lambda event: (not event.all_day, event.start, event.summary))
+        agenda.append((day, on_that_day))
+    return agenda
 
 
 def discover(url, username, password, config):
@@ -385,10 +418,12 @@ class Fetcher(threading.Thread):
 
     def fetch(self, account, secret):
         now = datetime.now().astimezone()
-        start = now - timedelta(minutes=self.app.config["late_grace_minutes"])
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start = min(midnight, now - timedelta(minutes=self.app.config["late_grace_minutes"]))
+        end = midnight + timedelta(days=AGENDA_DAYS)
         if account["type"] == "ics":
-            return self.fetch_ics(account, secret, start, now + HORIZON)
-        return self.fetch_caldav(account, secret, start, now + HORIZON)
+            return self.fetch_ics(account, secret, start, end)
+        return self.fetch_caldav(account, secret, start, end)
 
     def fetch_caldav(self, account, password, start, end):
         account_id = account["id"]
@@ -687,6 +722,148 @@ class AlarmWindow(tk.Toplevel):
         self.app.snooze_alarm(self.event)
 
 
+class AgendaWindow(tk.Toplevel):
+    """Every event of every watched calendar for the coming days, grouped by day."""
+
+    def __init__(self, app):
+        super().__init__(app.root)
+        self.app = app
+        self.title(f"Calendar Alarm — {t('agenda_title')}")
+        self.configure(bg="white")
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind("<Escape>", lambda _: self.close())
+        self.bind("<MouseWheel>", self.scroll)
+        # Sized in characters, so that the window keeps its proportions on a scaled display.
+        unit = tkfont.Font(family=FONT, size=10).measure("0")
+        self.wrap = 38 * unit
+        width, height = 62 * unit, min(100 * unit, self.winfo_screenheight() - 160)
+        x = (self.winfo_screenwidth() - width) // 2
+        self.geometry(f"{width}x{height}+{x}+60")
+        self.minsize(width, 30 * unit)
+        self.resizable(False, True)
+
+        header = tk.Frame(self, bg="white", padx=22, pady=14)
+        header.pack(fill="x")
+        tk.Label(header, text=t("agenda_title"), font=(FONT, 17, "bold"), bg="white", fg=COLOR_TEXT).pack(anchor="w")
+        self.subtitle = tk.Label(header, font=(FONT, 9), bg="white", fg=COLOR_MUTED)
+        self.subtitle.pack(anchor="w")
+        tk.Frame(self, bg=COLOR_LINE, height=1).pack(fill="x")
+
+        self.legend = tk.Frame(self, bg="#f6f7f8", padx=22, pady=8)
+        self.legend.pack(side="bottom", fill="x")
+        scrollbar = tk.Scrollbar(self, orient="vertical")
+        scrollbar.pack(side="right", fill="y")
+        self.canvas = tk.Canvas(self, bg="white", highlightthickness=0, yscrollcommand=scrollbar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.canvas.yview)
+        self.days = tk.Frame(self.canvas, bg="white", padx=22)
+        inner = self.canvas.create_window(0, 0, window=self.days, anchor="nw")
+        self.days.bind("<Configure>", lambda _: self.canvas.config(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure(inner, width=event.width))
+
+        self.timer = None
+        self.render()
+
+    def scroll(self, event):
+        if self.days.winfo_height() > self.canvas.winfo_height():
+            self.canvas.yview_scroll(-event.delta // 120, "units")
+
+    def render(self):
+        """Redraws everything; called when the events change and regularly, as time passes."""
+        if self.timer is not None:
+            self.after_cancel(self.timer)
+        self.timer = self.after(30_000, self.render)
+        app = self.app
+        now = datetime.now().astimezone()
+        self.subtitle.config(text=f"{t('agenda_subtitle', days=AGENDA_DAYS)}  ·  {app.status_text()}")
+        for frame in (self.days, self.legend):
+            for child in frame.winfo_children():
+                child.destroy()
+
+        calendars = app.watched_calendars()
+        colors = {name: CALENDAR_COLORS[index % len(CALENDAR_COLORS)] for index, name in enumerate(calendars)}
+        if not app.config["accounts"]:
+            tk.Label(self.days, text=t("agenda_no_account"), font=(FONT, 10), bg="white", fg=COLOR_MUTED).pack(
+                anchor="w", pady=(18, 8)
+            )
+            tk.Button(self.days, text=t("menu_accounts"), font=(FONT, 10), command=app.show_accounts).pack(anchor="w")
+            return
+
+        events = list(app.events.values())
+        upcoming = [event for event in events if not event.all_day and event.start > now]
+        next_event = min(upcoming, key=lambda event: event.start, default=None)
+        for offset, (day, day_events) in enumerate(agenda_days(events, now.date(), AGENDA_DAYS)):
+            name = texts.day_name(day)
+            title = f"{t('today')}  ·  {name}" if offset == 0 else f"{t('tomorrow')}  ·  {name}" if offset == 1 else name
+            tk.Label(
+                self.days,
+                text=title[0].upper() + title[1:],
+                font=(FONT, 11, "bold"),
+                bg="white",
+                fg=COLOR_ACCENT if offset == 0 else COLOR_TEXT,
+            ).pack(anchor="w", pady=(16, 4))
+            if not day_events:
+                tk.Label(self.days, text=t("nothing_planned"), font=(FONT, 9), bg="white", fg=COLOR_MUTED).pack(anchor="w")
+            for event in day_events:
+                self.row(event, now, colors.get(event.calendar, COLOR_MUTED), event is next_event)
+        tk.Frame(self.days, bg="white", height=16).pack()
+
+        for index, name in enumerate(calendars):
+            entry = tk.Frame(self.legend, bg=self.legend["bg"])
+            entry.grid(row=index // 2, column=index % 2, sticky="w", padx=(0, 18), pady=1)
+            tk.Frame(entry, bg=colors[name], width=10, height=10).pack(side="left", padx=(0, 6))
+            tk.Label(entry, text=name[:32], font=(FONT, 9), bg=self.legend["bg"], fg=COLOR_TEXT).pack(side="left")
+
+    def row(self, event, now, color, is_next):
+        ongoing = not event.all_day and event.start <= now < event.end
+        past = not event.all_day and event.end <= now
+        background = COLOR_HIGHLIGHT if ongoing or is_next else "white"
+        text_color = COLOR_MUTED if past else COLOR_TEXT
+
+        row = tk.Frame(self.days, bg=background)
+        row.pack(fill="x", pady=2)
+        tk.Frame(row, bg=COLOR_LINE if past else color, width=4).pack(side="left", fill="y")
+        hours = tk.Frame(row, bg=background)
+        hours.pack(side="left", anchor="n", padx=(10, 12), pady=6)
+        if event.all_day:
+            tk.Label(hours, text=t("all_day"), width=6, anchor="w", font=(FONT, 10), bg=background, fg=text_color).pack()
+        else:
+            tk.Label(
+                hours, text=f"{event.start:%H:%M}", width=6, anchor="w", font=(FONT, 10, "bold"), bg=background, fg=text_color
+            ).pack()
+            tk.Label(
+                hours, text=f"{event.end:%H:%M}", width=6, anchor="w", font=(FONT, 9), bg=background, fg=COLOR_MUTED
+            ).pack(anchor="w")
+
+        body = tk.Frame(row, bg=background)
+        body.pack(side="left", fill="x", expand=True, pady=6)
+        tk.Label(
+            body, text=event.summary, font=(FONT, 10, "bold"), bg=background, fg=text_color, wraplength=self.wrap, justify="left"
+        ).pack(anchor="w")
+        details = "  ·  ".join(part for part in (event.location, event.calendar) if part)
+        tk.Label(
+            body, text=details, font=(FONT, 9), bg=background, fg=COLOR_MUTED, wraplength=self.wrap, justify="left"
+        ).pack(anchor="w")
+        if ongoing or is_next:
+            tk.Label(
+                body, text=self.badge(event, now, ongoing), font=(FONT, 9, "bold"), bg=background, fg=COLOR_ACCENT
+            ).pack(anchor="w")
+
+    def badge(self, event, now, ongoing):
+        if ongoing:
+            return t("ongoing")
+        minutes = max(1, round((event.start - now).total_seconds() / 60))
+        return t("in_min", minutes=minutes) if minutes < 90 else t("in_hours", hours=round(minutes / 60))
+
+    def destroy(self):
+        self.after_cancel(self.timer)
+        super().destroy()
+
+    def close(self):
+        self.app.dialogs.pop("agenda", None)
+        self.destroy()
+
+
 def make_icon(color):
     # Drawn large: the same picture also makes the icon of the executable (build.ps1).
     image = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
@@ -760,6 +937,8 @@ class App:
             pystray.MenuItem(lambda _: self.status_text(), None, enabled=False),
             pystray.MenuItem(lambda _: self.next_text(), None, enabled=False),
             pystray.Menu.SEPARATOR,
+            # default=True: also what a plain click on the icon does.
+            pystray.MenuItem(lambda _: t("menu_agenda"), lambda: self.post(self.show_agenda), default=True),
             item("sync_now", self.fetcher_wake),
             item("test_alarm", self.test_alarm),
             item("menu_accounts", self.show_accounts),
@@ -870,6 +1049,23 @@ class App:
     def open(self, name, factory):
         if name not in self.dialogs:
             self.dialogs[name] = factory()
+        else:
+            self.dialogs[name].lift()
+            self.dialogs[name].focus_force()
+
+    def show_agenda(self):
+        self.open("agenda", lambda: AgendaWindow(self))
+
+    def watched_calendars(self):
+        """Names of the calendars being watched, in a stable order."""
+        names = []
+        for account in self.config["accounts"]:
+            if account["type"] == "ics":
+                names.append(account["name"])
+            else:
+                known = self.calendar_names.get(account["id"], {})
+                names.extend(known.get(url, url) for url in account["calendars"] or [])
+        return names
 
     def show_accounts(self):
         self.open("accounts", lambda: AccountsDialog(self))
@@ -877,6 +1073,8 @@ class App:
     def refresh_accounts(self):
         if "accounts" in self.dialogs:
             self.dialogs["accounts"].refresh()
+        if "agenda" in self.dialogs:
+            self.dialogs["agenda"].render()
         self.refresh_tray()
 
     def edit_account(self, account, provider=None, problem=None):
@@ -922,7 +1120,7 @@ class App:
             return
         now = datetime.now().astimezone()
         if account_id not in self.last_sync or account_id in self.sync_errors:
-            log.info("%s: sync ok, %d events in the next 24 h", account_label(account), len(events))
+            log.info("%s: sync ok, %d events in the next %d days", account_label(account), len(events), AGENDA_DAYS)
         self.account_events[account_id] = {event.key: event for event in events}
         self.last_sync[account_id] = now
         self.sync_errors.pop(account_id, None)
@@ -1068,10 +1266,15 @@ class App:
 
     def next_text(self):
         now = datetime.now().astimezone()
-        upcoming = sorted((event for event in self.events.values() if event.start > now), key=lambda event: event.start)
+        upcoming = [
+            event
+            for event in self.events.values()
+            if not event.all_day and now < event.start <= now + timedelta(hours=24)
+        ]
         if not upcoming:
             return t("no_upcoming")
-        return t("next_event", time=f"{upcoming[0].start:%H:%M}", title=upcoming[0].summary)[:80]
+        first = min(upcoming, key=lambda event: event.start)
+        return t("next_event", time=f"{first.start:%H:%M}", title=first.summary)[:80]
 
     def refresh_tray(self):
         self.tray.title = f"Calendar Alarm — {self.status_text()}"[:120]
@@ -1114,7 +1317,7 @@ def check():
     for account in app.config["accounts"]:
         try:
             events = fetcher.fetch(account, get_secret(account))
-            log.info("check: %s: %d events in the next 24 h", account_label(account), len(events))
+            log.info("check: %s: %d events in the next %d days", account_label(account), len(events), AGENDA_DAYS)
         except Exception as exc:
             ok = False
             log.error("check: %s: %r", account_label(account), exc)
